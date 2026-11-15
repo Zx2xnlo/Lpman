@@ -1,0 +1,5601 @@
+-- LRIS SHOP UI
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local RunService = game:GetService("RunService")
+local StatsService = game:GetService("Stats")
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
+local GuiService = game:GetService("GuiService")
+
+local UI_FONT = "Montserrat"
+local function E(name)
+    local ok, v = pcall(function()
+        return Enum.Font[name]
+    end)
+    return ok and v or Enum.Font.Gotham
+end
+local FontFamilies = {
+    Montserrat = { R = E("Montserrat"), M = E("MontserratMedium"), B = E("MontserratBold") },
+    BuilderSans = { R = E("BuilderSans"), M = E("BuilderSansMedium"), B = E("BuilderSansBold") },
+    Gotham = { R = Enum.Font.Gotham, M = Enum.Font.GothamMedium, B = Enum.Font.GothamBold },
+}
+local FNT = FontFamilies[UI_FONT] or FontFamilies.Gotham
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local SOUND_ON = "rbxasset://sounds/switch.wav"
+local SOUND_OFF = "rbxasset://sounds/button.wav"
+local SOUND_FALLBACK = "rbxasset://sounds/electronicpingshort.wav"
+
+--==================================================
+-- CONFIG  (Auto Save / Auto Load)
+--==================================================
+
+local CONFIG_FILE = "LRIS_SHOP_Config.json"
+
+local Defaults = {
+    UIAccentColor = "#A78BFA",
+    UIBackgroundColor = "#08080F",
+    UIButtonColor = "#1E1B33",
+    FloatingButtonColor = "#0C0B16",
+    FloatingBorderColor = "#C4B5FD",
+    FloatingGlowColor = "#8B5CF6",
+    -- Kiosk Auto Farm Config
+    KioskFarmEnabled = false,
+    FarmUnderground = true, -- true = travel underground by tween and farm underground, false = teleport and stay on the ground
+    UndergroundDepth = 15,
+    TweenSpeed = 200,
+    -- Kiosks to farm (multi-select, farmed in this order: Carrot, Chompoo, Wood, Avocado, Apple, Rock)
+    Sel_Carrot = true,
+    Sel_Chompoo = true,
+    Sel_Wood = true,
+    Sel_Avocado = true,
+    Sel_Apple = true,
+    Sel_Rock = true,
+    Sel_Cement = false, -- Black Jobs: cement stealing (minigame)
+    Sel_Wire = false,   -- Black Jobs: wire stealing (minigame)
+    Sel_Hydrant = false, -- Timed loop events (5 collect points each)
+    Sel_Light = false,
+    Sel_Crystal = false,
+    Sel_Halloween = false, -- Halloween event: knock on the doors
+    SkipOccupied = true,   -- skip loop points / doors that another player is already at
+    DoorCooldown = 30,     -- seconds before knocking on the same door again
+    JobDelay = 0.5,      -- seconds to wait after each theft before the next site
+    JobRoundAmount = 10, -- pieces to collect per round before moving on
+    UseTween = true,     -- true = travel by tween underground, false = teleport
+    InstantPrompt = true,
+    -- Auto Sell Config
+    AutoSellEnabled = false, -- the game/another script already auto-sells
+    -- Rock Processing Config
+    AutoProcessEnabled = true,
+    CarBoost = false,
+    CarBoostPower = 0.8,
+    CarMaxSpeed = 150,
+    CarNoLimit = false,
+    -- Visual: ESP (player info) + avatar
+    ESPEnabled = false,
+    ESPName = true,
+    ESPDistance = true,
+    ESPBox = true,
+    ESPHealth = true,
+    ESPArmor = true,
+    ESPShowID = true,
+    ESPMaxDistance = 1000,
+    ESPMaxPlayers = 15,
+    AvatarMod = false,
+    -- System
+    SoundEnabled = true,
+    UIToggleKey = "RightShift",
+    AntiAFK = true,
+    StatsVisible = false,
+    UIScalePercent = 80,
+    LastTab = "KioskFarm",
+    WindowVisible = true,
+    Maximized = false,
+    CollapsedSections = "",
+    WindowX = 0.5,
+    WindowY = 0.5,
+    FloatX = 0.04,
+    FloatY = 0.25,
+    StatsX = 0.5,
+    StatsY = 0.045,
+}
+
+local Config = {}
+for k, v in pairs(Defaults) do
+    Config[k] = v
+end
+
+local LoadedFromFile = false
+
+local function LoadConfig()
+    if not (isfile and readfile) then
+        return
+    end
+    local ok, exists = pcall(isfile, CONFIG_FILE)
+    if not (ok and exists) then
+        return
+    end
+    pcall(function()
+        local data = HttpService:JSONDecode(readfile(CONFIG_FILE))
+        if type(data) == "table" then
+            for k, v in pairs(Defaults) do
+                if type(data[k]) == type(v) then
+                    Config[k] = data[k]
+                end
+            end
+            -- Also restore dynamically-created per-player exclusion settings.
+            for k, v in pairs(data) do
+                if type(k) == "string"
+                    and string.sub(k, 1, 14) == "ExcludePlayer_"
+                    and type(v) == "boolean" then
+                    Config[k] = v
+                end
+            end
+            LoadedFromFile = true
+        end
+    end)
+end
+
+LoadConfig()
+for _, k in ipairs({ "WindowX", "WindowY" }) do
+    Config[k] = math.clamp(Config[k], 0.05, 0.95)
+end
+for _, k in ipairs({ "FloatX", "FloatY", "StatsX", "StatsY" }) do
+    Config[k] = math.clamp(Config[k], 0.02, 0.98)
+end
+Config.UIScalePercent = math.clamp(Config.UIScalePercent, 60, 120)
+
+local SaveHooks = {}
+local SaveToken = 0
+
+local function Fire(state)
+    for _, h in ipairs(SaveHooks) do
+        pcall(h, state)
+    end
+end
+
+local function WriteNow()
+    if not writefile then
+        return "unsupported"
+    end
+    local ok = pcall(function()
+        writefile(CONFIG_FILE, HttpService:JSONEncode(Config))
+    end)
+    return ok and "saved" or "failed"
+end
+
+local function SaveConfig(instant)
+    SaveToken = SaveToken + 1
+    local token = SaveToken
+    Fire("saving")
+    local function commit()
+        if token ~= SaveToken then
+            return
+        end
+        local result = WriteNow()
+        Fire(result)
+        if result == "saved" then
+            task.delay(1.8, function()
+                if token == SaveToken then
+                    Fire("idle")
+                end
+            end)
+        end
+    end
+    if instant then
+        commit()
+    else
+        task.delay(0.3, commit)
+    end
+end
+
+local function SetConfig(key, value)
+    if Config[key] == value then
+        return
+    end
+    Config[key] = value
+    SaveConfig()
+end
+
+
+local function RGB(r, g, b)
+    return Color3.fromRGB(r, g, b)
+end
+
+local function Lum(c)
+    return 0.299 * c.R + 0.587 * c.G + 0.114 * c.B
+end
+
+local function Hex(key, fallback)
+    local ok, c = pcall(Color3.fromHex, Config[key])
+    return ok and c or fallback
+end
+
+local Theme = {}
+
+local function ComputeTheme()
+    local bg = Hex("UIBackgroundColor", RGB(8, 8, 8))
+    local dark = Lum(bg) < 0.5
+    local to = dark and Color3.new(1, 1, 1) or Color3.new(0, 0, 0)
+    Theme.Bg = bg
+    Theme.Surface = bg:Lerp(to, 0.05)
+    Theme.Surface2 = bg:Lerp(to, 0.095)
+    Theme.Stroke = bg:Lerp(to, 0.17)
+    Theme.Text = dark and RGB(244, 244, 244) or RGB(20, 20, 20)
+    Theme.Sub = Theme.Text:Lerp(bg, 0.16)
+    Theme.Muted = Theme.Text:Lerp(bg, 0.38)
+    Theme.Accent = Hex("UIAccentColor", RGB(190, 190, 190))
+    Theme.OnAccent = Lum(Theme.Accent) > 0.55 and RGB(15, 15, 15) or RGB(255, 255, 255)
+    Theme.Button = Hex("UIButtonColor", RGB(36, 36, 36))
+    local h, s, v = Theme.Accent:ToHSV()
+    if s < 0.12 then
+        Theme.Accent2 = Theme.Accent:Lerp(Color3.fromRGB(96, 104, 128), 0.6)
+    else
+        Theme.Accent2 = Color3.fromHSV((h + 0.12) % 1, s, math.max(v, 0.6))
+    end
+end
+
+ComputeTheme()
+
+local ThemeHooks = {}
+
+local function OnTheme(fn)
+    ThemeHooks[#ThemeHooks + 1] = fn
+    pcall(fn)
+end
+
+local function Bind(obj, prop, key)
+    OnTheme(function()
+        obj[prop] = Theme[key]
+    end)
+end
+
+local function ApplyTheme()
+    ComputeTheme()
+    for _, fn in ipairs(ThemeHooks) do
+        pcall(fn)
+    end
+end
+
+--==================================================
+-- HELPERS
+--==================================================
+
+local Orders = setmetatable({}, { __mode = "k" })
+local function Next(parent)
+    Orders[parent] = (Orders[parent] or 0) + 1
+    return Orders[parent]
+end
+
+local function New(className, props, parent)
+    local obj = Instance.new(className)
+    for k, v in pairs(props or {}) do
+        obj[k] = v
+    end
+    obj.Parent = parent
+    return obj
+end
+
+local function Corner(parent, radius)
+    return New("UICorner", { CornerRadius = UDim.new(0, radius) }, parent)
+end
+
+local function Stroke(parent, color, thickness, transparency)
+    return New("UIStroke", {
+        Color = color,
+        Thickness = thickness or 1,
+        Transparency = transparency or 0,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, parent)
+end
+
+local function Pad(parent, l, r, t, b)
+    return New("UIPadding", {
+        PaddingLeft = UDim.new(0, l or 0),
+        PaddingRight = UDim.new(0, r or 0),
+        PaddingTop = UDim.new(0, t or 0),
+        PaddingBottom = UDim.new(0, b or 0),
+    }, parent)
+end
+
+local function List(parent, padding)
+    return New("UIListLayout", {
+        Padding = UDim.new(0, padding or 0),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, parent)
+end
+
+local function Text(parent, text, size, font, color, align)
+    local l = New("TextLabel", {
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Text = text or "",
+        TextSize = size or 13,
+        Font = font or FNT.R,
+        TextXAlignment = align or Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, parent)
+    if type(color) == "string" then
+        Bind(l, "TextColor3", color)
+    elseif color then
+        l.TextColor3 = color
+    end
+    return l
+end
+
+local function Tween(obj, t, props, style, dir)
+    local tw = TweenService:Create(
+        obj,
+        TweenInfo.new(t, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out),
+        props
+    )
+    tw:Play()
+    return tw
+end
+
+local function Apply(obj, animate, props)
+    if animate then
+        Tween(obj, 0.16, props)
+    else
+        for k, v in pairs(props) do
+            obj[k] = v
+        end
+    end
+end
+
+local function Panel(parent, size, class)
+    local f = New(class or "Frame", { BorderSizePixel = 0, LayoutOrder = Next(parent) }, parent)
+    if class == "TextButton" then
+        f.Text = ""
+        f.AutoButtonColor = false
+    end
+    if size then
+        f.Size = size
+    end
+    Bind(f, "BackgroundColor3", "Surface")
+    f.BackgroundTransparency = 0.05
+    Corner(f, 16)
+    Bind(Stroke(f, Theme.Stroke, 1, 0.4), "Color", "Stroke")
+    New("UIGradient", {
+        Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.new(0.76, 0.76, 0.76)),
+        Rotation = 90,
+    }, f)
+    local hi = New("Frame", {
+        Size = UDim2.new(1, -28, 0, 1),
+        Position = UDim2.fromOffset(14, 0),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 0.9,
+        BorderSizePixel = 0,
+    }, f)
+    New("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.5, 0),
+            NumberSequenceKeypoint.new(1, 1),
+        }),
+    }, hi)
+    return f
+end
+
+local function HoverRow(btn)
+    local st = btn:FindFirstChildOfClass("UIStroke")
+    local sheen, edge
+    if not btn:FindFirstChildOfClass("UIListLayout") and not btn:FindFirstChildOfClass("UIGridLayout") then
+        btn.ClipsDescendants = true
+        sheen = New("Frame", {
+            Name = "Sheen",
+            Size = UDim2.new(0, 70, 1, 0),
+            Position = UDim2.new(-0.3, 0, 0, 0),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0,
+            ZIndex = 4,
+        }, btn)
+        New("UIGradient", {
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(0.5, 0.9),
+                NumberSequenceKeypoint.new(1, 1),
+            }),
+        }, sheen)
+        edge = New("Frame", {
+            Size = UDim2.new(0, 3, 0, 0),
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.new(0, 0, 0.5, 0),
+            BorderSizePixel = 0,
+            BackgroundTransparency = 1,
+            ZIndex = 4,
+        }, btn)
+        Bind(edge, "BackgroundColor3", "Accent")
+    end
+    btn.MouseEnter:Connect(function()
+        if sheen then
+            sheen.Position = UDim2.new(-0.3, 0, 0, 0)
+            Tween(sheen, 0.6, { Position = UDim2.new(1.1, 0, 0, 0) }, Enum.EasingStyle.Quad)
+            Tween(edge, 0.2, { Size = UDim2.new(0, 3, 0.6, 0), BackgroundTransparency = 0.05 })
+        end
+        Tween(btn, 0.12, { BackgroundColor3 = Theme.Surface2 })
+        if st then
+            Tween(st, 0.12, { Transparency = 0.05 })
+        end
+    end)
+    local sc
+    if btn:IsA("GuiButton") then
+        sc = New("UIScale", { Scale = 1 }, btn)
+        btn.MouseButton1Down:Connect(function()
+            Tween(sc, 0.08, { Scale = 0.982 })
+            pcall(function()
+                if btn:FindFirstChildOfClass("UIListLayout") then
+                    return
+                end
+                local m = UIS:GetMouseLocation()
+                local ap, asz = btn.AbsolutePosition, btn.AbsoluteSize
+                if asz.X < 1 or asz.Y < 1 then
+                    return
+                end
+                btn.ClipsDescendants = true
+                local r = New("Frame", {
+                    Size = UDim2.fromOffset(0, 0),
+                    AnchorPoint = Vector2.new(0.5, 0.5),
+                    Position = UDim2.fromScale((m.X - ap.X) / asz.X, (m.Y - ap.Y) / asz.Y),
+                    BackgroundColor3 = Theme.Accent,
+                    BackgroundTransparency = 0.7,
+                    BorderSizePixel = 0,
+                    ZIndex = 5,
+                }, btn)
+                Corner(r, 200)
+                Tween(r, 0.55, { Size = UDim2.fromOffset(340, 340), BackgroundTransparency = 1 }, Enum.EasingStyle.Quad)
+                task.delay(0.6, function()
+                    r:Destroy()
+                end)
+            end)
+        end)
+        btn.MouseButton1Up:Connect(function()
+            Tween(sc, 0.18, { Scale = 1 }, Enum.EasingStyle.Back)
+        end)
+    end
+    btn.MouseLeave:Connect(function()
+        if edge then
+            Tween(edge, 0.2, { Size = UDim2.new(0, 3, 0, 0), BackgroundTransparency = 1 })
+        end
+        Tween(btn, 0.12, { BackgroundColor3 = Theme.Surface })
+        if st then
+            Tween(st, 0.12, { Transparency = 0.4 })
+        end
+        if sc then
+            Tween(sc, 0.12, { Scale = 1 })
+        end
+    end)
+end
+
+local function AccentGrad(parent, rotation)
+    local g = New("UIGradient", { Rotation = rotation or 0 }, parent)
+    OnTheme(function()
+        g.Color = ColorSequence.new(Theme.Accent, Theme.Accent2)
+    end)
+    return g
+end
+
+local function Tint(parent)
+    local t = New("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+    }, parent)
+    Corner(t, 12)
+    local g = AccentGrad(t, 25)
+    g.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.8),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    return t
+end
+
+local function IsPointer(input)
+    return input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function IsMove(input)
+    return input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function Icon(parent, kind, x, y)
+    local box = New("Frame", {
+        Size = UDim2.fromOffset(18, 18),
+        Position = UDim2.fromOffset(x, y),
+        BackgroundTransparency = 1,
+    }, parent)
+    local parts = {}
+    local function rect(px, py, w, h, r, rot)
+        local f = New("Frame", {
+            Size = UDim2.fromOffset(w, h),
+            Position = UDim2.fromOffset(px, py),
+            BorderSizePixel = 0,
+            Rotation = rot or 0,
+        }, box)
+        Corner(f, r or 1)
+        parts[#parts + 1] = { f = f }
+        return f
+    end
+    if kind == "grid" then
+        rect(1, 1, 7, 7, 2)
+        rect(10, 1, 7, 7, 2)
+        rect(1, 10, 7, 7, 2)
+        rect(10, 10, 7, 7, 2)
+    elseif kind == "sliders" then
+        rect(1, 2, 16, 2, 1)
+        rect(1, 8, 11, 2, 1)
+        rect(1, 14, 14, 2, 1)
+    elseif kind == "dress" then
+        rect(6, 1, 6, 6, 3)
+        rect(3, 9, 12, 8, 3)
+    elseif kind == "eye" then
+        rect(2, 5, 14, 8, 4)
+        rect(7, 7, 4, 4, 2)
+    elseif kind == "close" then
+        rect(1, 8, 16, 2, 1, 45)
+        rect(1, 8, 16, 2, 1, -45)
+    elseif kind == "max" then
+        local r = New("Frame", {
+            Size = UDim2.fromOffset(12, 12),
+            Position = UDim2.fromOffset(3, 3),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+        }, box)
+        Corner(r, 3)
+        parts[#parts + 1] = { stroke = Stroke(r, Color3.new(1, 1, 1), 2, 0) }
+    else -- ring (settings)
+        local r = New("Frame", {
+            Size = UDim2.fromOffset(16, 16),
+            Position = UDim2.fromOffset(1, 1),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+        }, box)
+        Corner(r, 8)
+        parts[#parts + 1] = { stroke = Stroke(r, Color3.new(1, 1, 1), 2, 0) }
+        rect(7, 7, 4, 4, 2)
+    end
+    return function(c)
+        for _, p in ipairs(parts) do
+            if p.stroke then
+                p.stroke.Color = c
+            else
+                p.f.BackgroundColor3 = c
+            end
+        end
+    end
+end
+
+--==================================================
+-- ROOT GUI
+--==================================================
+
+pcall(function()
+    for _, v in ipairs(PlayerGui:GetChildren()) do
+        if v.Name == "LRIS_UI" or v.Name == "LRIS_Floating" or v.Name == "LRIS_Stats"
+            or v.Name == "TwoSki_RideAPet_Floating" then
+            v:Destroy()
+        end
+    end
+end)
+
+local Screen = New("ScreenGui", {
+    Name = "LRIS_UI",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    DisplayOrder = 999998,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, PlayerGui)
+
+local Conns = {}
+local function Track(c)
+    Conns[#Conns + 1] = c
+    return c
+end
+Screen.Destroying:Connect(function()
+    for _, c in ipairs(Conns) do
+        pcall(function()
+            c:Disconnect()
+        end)
+    end
+end)
+
+local BW, BH = 740, 580
+local SW = 172
+
+local function ViewSize()
+    local s = Screen.AbsoluteSize
+    if s.X > 0 and s.Y > 0 then
+        return s
+    end
+    return workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+end
+
+local function TargetScale()
+    local v = ViewSize()
+    local fit = math.min(v.X * 0.97 / BW, v.Y * 0.95 / BH)
+    local base = math.min(fit * (Config.Maximized and 1 or 0.92), Config.Maximized and 1.4 or 1.1)
+    local s = base * (Config.UIScalePercent / 100)
+    return math.clamp(s, 0.3, math.max(0.3, fit))
+end
+
+local Main = New("CanvasGroup", {
+    Name = "Main",
+    Size = UDim2.fromOffset(BW, BH),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(Config.WindowX, Config.WindowY),
+    BorderSizePixel = 0,
+    BackgroundTransparency = 0.04,
+    GroupTransparency = 1,
+    Active = true,
+    Visible = false,
+}, Screen)
+Bind(Main, "BackgroundColor3", "Bg")
+Corner(Main, 26)
+Main.BackgroundTransparency = 1
+Main.Active = false
+do
+    local d = New("CanvasGroup", {
+        Name = "Deco",
+        Size = UDim2.new(1, -100, 1, -84),
+        Position = UDim2.fromOffset(88, 72),
+        BorderSizePixel = 0,
+        BackgroundTransparency = 0.03,
+    }, Main)
+    Bind(d, "BackgroundColor3", "Bg")
+    Corner(d, 22)
+    local g = New("Frame", {
+        Size = UDim2.new(1, 0, 0, 110),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+    }, d)
+    local gg = AccentGrad(g, 90)
+    gg.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.58),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    local v = New("Frame", {
+        Size = UDim2.new(1, 0, 0, 90),
+        AnchorPoint = Vector2.new(0, 1),
+        Position = UDim2.fromScale(0, 1),
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BorderSizePixel = 0,
+    }, d)
+    New("UIGradient", {
+        Rotation = 90,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(1, 0.55),
+        }),
+    }, v)
+
+    local function Glow(key, sz, x0, y0, x1, y1, dur)
+        local c = New("Frame", {
+            Size = UDim2.fromOffset(sz, sz),
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(x0, y0),
+            BackgroundTransparency = 1,
+        }, d)
+        for i = 0, 7 do
+            local k = sz * (1 - i * 0.11)
+            local l = New("Frame", {
+                Size = UDim2.fromOffset(k, k),
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromScale(0.5, 0.5),
+                BackgroundTransparency = 0.965,
+                BorderSizePixel = 0,
+            }, c)
+            Corner(l, k)
+            Bind(l, "BackgroundColor3", key)
+        end
+        TweenService:Create(
+            c,
+            TweenInfo.new(dur, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+            { Position = UDim2.fromScale(x1, y1) }
+        ):Play()
+    end
+    Glow("Accent", 440, 0.08, 0.1, 0.35, 0.3, 10)
+    Glow("Accent2", 480, 0.95, 0.95, 0.68, 0.72, 12)
+    Glow("Accent", 320, 0.92, 0.12, 0.74, 0.4, 9)
+
+    local comets = {}
+    for i = 1, 2 do
+        local c = New("Frame", {
+            Size = UDim2.fromOffset(7, 7),
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BorderSizePixel = 0,
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            ZIndex = 8,
+        }, d)
+        Corner(c, 4)
+        local cs = Stroke(c, Theme.Accent, 5, 0.55)
+        Bind(cs, "Color", (i == 1) and "Accent" or "Accent2")
+        comets[i] = c
+    end
+    local cacc = 0
+    Track(RunService.RenderStepped:Connect(function()
+        if not Main.Visible then
+            return
+        end
+        local sz = d.AbsoluteSize
+        local wx, wy = math.max(sz.X, 1), math.max(sz.Y, 1)
+        local total = 2 * (wx + wy)
+        for i, c in ipairs(comets) do
+            local dist = (os.clock() * 260 + (i - 1) * total / 2) % total
+            if dist < wx then
+                c.Position = UDim2.new(dist / wx, 0, 0, 3)
+            elseif dist < wx + wy then
+                c.Position = UDim2.new(1, -3, (dist - wx) / wy, 0)
+            elseif dist < 2 * wx + wy then
+                c.Position = UDim2.new(1 - (dist - wx - wy) / wx, 0, 1, -3)
+            else
+                c.Position = UDim2.new(0, 3, 1 - (dist - 2 * wx - wy) / wy, 0)
+            end
+        end
+    end))
+
+    local wm = New("TextLabel", {
+        Size = UDim2.fromOffset(420, 110),
+        AnchorPoint = Vector2.new(1, 1),
+        Position = UDim2.new(1, -14, 1, -4),
+        BackgroundTransparency = 1,
+        Text = "LRIS",
+        Font = FNT.B,
+        TextSize = 96,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        TextTransparency = 0.86,
+    }, d)
+    Bind(wm, "TextColor3", "Accent")
+
+    local rf = New("Frame", {
+        Size = UDim2.new(0.35, 0, 2, 0),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.15, 0.5),
+        Rotation = 18,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+    }, d)
+    New("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.5, 0.9),
+            NumberSequenceKeypoint.new(1, 1),
+        }),
+    }, rf)
+    TweenService:Create(
+        rf,
+        TweenInfo.new(11, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        { Position = UDim2.fromScale(0.9, 0.5) }
+    ):Play()
+
+    local inner = New("Frame", {
+        Size = UDim2.new(1, -10, 1, -10),
+        Position = UDim2.fromOffset(5, 5),
+        BackgroundTransparency = 1,
+    }, d)
+    Corner(inner, 18)
+    Stroke(inner, Color3.new(1, 1, 1), 1, 0.92)
+end
+
+local function Aurora(key, rot)
+    local f = New("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0 }, Main:FindFirstChild("Deco"))
+    Bind(f, "BackgroundColor3", key)
+    Corner(f, 18)
+    New("UIGradient", {
+        Rotation = rot,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.82),
+            NumberSequenceKeypoint.new(0.55, 1),
+            NumberSequenceKeypoint.new(1, 1),
+        }),
+    }, f)
+end
+Aurora("Accent", 35)
+Aurora("Accent2", 215)
+
+do
+    local function Orb(key, sz, x0, y0, x1, y1, dur, tr)
+        local o = New("Frame", {
+            Size = UDim2.fromOffset(sz, sz),
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(x0, y0),
+            BorderSizePixel = 0,
+            BackgroundTransparency = tr,
+        }, Main:FindFirstChild("Deco"))
+        Corner(o, math.floor(sz / 2))
+        Bind(o, "BackgroundColor3", key)
+        New("UIGradient", {
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0),
+                NumberSequenceKeypoint.new(1, 1),
+            }),
+            Rotation = 90,
+        }, o)
+        TweenService:Create(
+            o,
+            TweenInfo.new(dur, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+            { Position = UDim2.fromScale(x1, y1) }
+        ):Play()
+    end
+    Orb("Accent", 320, 0.15, 0.2, 0.45, 0.45, 9, 0.82)
+    Orb("Accent2", 360, 0.9, 0.85, 0.55, 0.55, 11, 0.84)
+    Orb("Accent", 220, 0.8, 0.1, 0.65, 0.35, 8, 0.88)
+
+    task.spawn(function()
+        while Screen.Parent do
+            task.wait(1.2 + math.random() * 2.5)
+            if Main.Visible and Main.GroupTransparency < 0.5 then
+                pcall(function()
+                    local st = New("Frame", {
+                        Size = UDim2.fromOffset(110, 2),
+                        AnchorPoint = Vector2.new(0.5, 0.5),
+                        Position = UDim2.fromScale(math.random() * 0.6, -0.05),
+                        Rotation = 28,
+                        BorderSizePixel = 0,
+                        BackgroundColor3 = Theme.Accent,
+                        ZIndex = 2,
+                    }, Main:FindFirstChild("Deco"))
+                    New("UIGradient", {
+                        Transparency = NumberSequence.new({
+                            NumberSequenceKeypoint.new(0, 1),
+                            NumberSequenceKeypoint.new(1, 0.1),
+                        }),
+                    }, st)
+                    local x1 = st.Position.X.Scale + 0.45
+                    Tween(st, 0.9, { Position = UDim2.fromScale(x1, 1.1), BackgroundTransparency = 0.6 }, Enum.EasingStyle.Quad)
+                    task.delay(1, function()
+                        st:Destroy()
+                    end)
+                end)
+            end
+        end
+    end)
+
+    local acc = 0
+    Track(RunService.RenderStepped:Connect(function(dt)
+        acc = acc + dt
+        if acc < 0.04 or not Main.Visible then
+            return
+        end
+        acc = 0
+        local m = UIS:GetMouseLocation()
+        local ap, asz = Main.AbsolutePosition, Main.AbsoluteSize
+        if m.X < ap.X or m.Y < ap.Y or m.X > ap.X + asz.X or m.Y > ap.Y + asz.Y then
+            return
+        end
+        if UIS:GetLastInputType() ~= Enum.UserInputType.MouseMovement then
+            return
+        end
+        local d = New("Frame", {
+            Size = UDim2.fromOffset(5, 5),
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset(m.X + math.random(-4, 4), m.Y + math.random(-4, 4)),
+            BorderSizePixel = 0,
+            BackgroundColor3 = (math.random() < 0.5) and Theme.Accent or Theme.Accent2,
+            BackgroundTransparency = 0.3,
+            ZIndex = 40,
+        }, Screen)
+        Corner(d, 3)
+        Tween(d, 0.5, {
+            Size = UDim2.fromOffset(1, 1),
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(m.X + math.random(-14, 14), m.Y + math.random(6, 22)),
+        }, Enum.EasingStyle.Quad)
+        task.delay(0.55, function()
+            d:Destroy()
+        end)
+    end))
+
+    for i = 1, 11 do
+        local v = New("Frame", {
+            Size = UDim2.new(0, 1, 1, 0),
+            Position = UDim2.fromScale(i / 12, 0),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BackgroundTransparency = 0.975,
+            BorderSizePixel = 0,
+        }, Main:FindFirstChild("Deco"))
+        New("UIGradient", {
+            Rotation = 90,
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(0.5, 0),
+                NumberSequenceKeypoint.new(1, 1),
+            }),
+        }, v)
+    end
+    for i = 1, 7 do
+        local h = New("Frame", {
+            Size = UDim2.new(1, 0, 0, 1),
+            Position = UDim2.fromScale(0, i / 8),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BackgroundTransparency = 0.975,
+            BorderSizePixel = 0,
+        }, Main:FindFirstChild("Deco"))
+        New("UIGradient", {
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(0.5, 0),
+                NumberSequenceKeypoint.new(1, 1),
+            }),
+        }, h)
+    end
+
+    local scan = New("Frame", {
+        Size = UDim2.new(1, 0, 0, 70),
+        Position = UDim2.new(0, 0, 0, -80),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 0,
+        BorderSizePixel = 0,
+    }, Main:FindFirstChild("Deco"))
+    New("UIGradient", {
+        Rotation = 90,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.5, 0.94),
+            NumberSequenceKeypoint.new(1, 1),
+        }),
+    }, scan)
+    TweenService:Create(
+        scan,
+        TweenInfo.new(3.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, false, 5),
+        { Position = UDim2.new(0, 0, 1, 10) }
+    ):Play()
+end
+
+local Dust = New("Frame", {
+    Size = UDim2.fromScale(1, 1),
+    BackgroundTransparency = 1,
+    ClipsDescendants = true,
+}, Main:FindFirstChild("Deco"))
+for i = 1, 16 do
+    local sz = math.random(2, 4)
+    local x = math.random()
+    local p = New("Frame", {
+        Size = UDim2.fromOffset(sz, sz),
+        Position = UDim2.fromScale(x, 1.05),
+        BorderSizePixel = 0,
+        BackgroundTransparency = 0.55 + math.random() * 0.3,
+    }, Dust)
+    Corner(p, 2)
+    Bind(p, "BackgroundColor3", (i % 2 == 0) and "Accent" or "Accent2")
+    local dur = 9 + math.random() * 9
+    TweenService:Create(
+        p,
+        TweenInfo.new(dur, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1, false, math.random() * 5),
+        { Position = UDim2.fromScale(math.clamp(x + (math.random() - 0.5) * 0.15, 0, 1), -0.05) }
+    ):Play()
+end
+
+local MainStroke = Stroke(Main, Color3.new(1, 1, 1), 1.5, 1)
+local MainGrad = New("UIGradient", { Rotation = 0 }, MainStroke)
+OnTheme(function()
+    local h, sat = Theme.Accent:ToHSV()
+    sat = math.max(sat, 0.6)
+    MainGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Theme.Accent),
+        ColorSequenceKeypoint.new(0.25, Color3.fromHSV((h + 0.1) % 1, sat, 1)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromHSV((h + 0.25) % 1, sat, 1)),
+        ColorSequenceKeypoint.new(0.75, Color3.fromHSV((h + 0.1) % 1, sat, 1)),
+        ColorSequenceKeypoint.new(1, Theme.Accent),
+    })
+end)
+TweenService:Create(
+    MainGrad,
+    TweenInfo.new(6, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1),
+    { Rotation = 360 }
+):Play()
+local MainScale = New("UIScale", { Scale = TargetScale() }, Main)
+do
+    local gs = Stroke(Main:FindFirstChild("Deco"), Theme.Accent, 14, 0.8)
+    Bind(gs, "Color", "Accent")
+    TweenService:Create(
+        gs,
+        TweenInfo.new(2.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        { Transparency = 0.96 }
+    ):Play()
+end
+
+local Shadow = New("Frame", {
+    Size = UDim2.fromOffset(BW, BH),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundTransparency = 1,
+    ZIndex = 0,
+    Visible = false,
+}, Screen)
+local ShadowScale = New("UIScale", { Scale = 1 }, Shadow)
+local ShadowLayers = {}
+for i, g in ipairs({ 8, 20, 36, 56 }) do
+    local l = New("Frame", {
+        Size = UDim2.new(1, g * 2, 1, g * 2),
+        Position = UDim2.fromOffset(-g, -g + 10),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(0, 0, 0),
+    }, Shadow)
+    Corner(l, 18 + g)
+    ShadowLayers[i] = { f = l, base = 0.82 + i * 0.03 }
+end
+local ShadowGlow = New("Frame", {
+    Size = UDim2.new(1, 40, 1, 40),
+    Position = UDim2.fromOffset(-20, -20),
+    BorderSizePixel = 0,
+}, Shadow)
+Corner(ShadowGlow, 38)
+Bind(ShadowGlow, "BackgroundColor3", "Accent")
+ShadowLayers[#ShadowLayers + 1] = { f = ShadowGlow, base = 0.95 }
+
+Track(RunService.RenderStepped:Connect(function()
+    local vis = Main.Visible
+    Shadow.Visible = false
+    if not vis then
+        return
+    end
+    Shadow.Position = Main.Position
+    Shadow.Size = Main.Size
+    ShadowScale.Scale = MainScale.Scale
+    local a = Main.GroupTransparency
+    for _, l in ipairs(ShadowLayers) do
+        l.f.BackgroundTransparency = 1 - (1 - l.base) * (1 - a)
+    end
+end))
+
+local TopGlow = New("Frame", {
+    Size = UDim2.new(0.8, 0, 0, 1),
+    Position = UDim2.fromScale(0.1, 0),
+    BorderSizePixel = 0,
+}, Main)
+Bind(TopGlow, "BackgroundColor3", "Accent")
+TopGlow.Visible = false
+New("UIGradient", {
+    Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.5, 0.15),
+        NumberSequenceKeypoint.new(1, 1),
+    }),
+}, TopGlow)
+
+local Opening = false
+
+local function ApplyScale(animate)
+    if Opening then
+        return
+    end
+    if animate and Main.Visible then
+        Tween(MainScale, 0.25, { Scale = TargetScale() }, Enum.EasingStyle.Quint)
+    else
+        MainScale.Scale = TargetScale()
+    end
+end
+
+Track(Screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+    ApplyScale(false)
+end))
+
+local function PlayToggleSound(on, big)
+    if not Config.SoundEnabled then
+        return
+    end
+    pcall(function()
+        local function play(id, vol, speed)
+            local s = Instance.new("Sound")
+            s.SoundId = id
+            s.Volume = vol
+            s.PlaybackSpeed = speed
+            s.Parent = SoundService
+            s:Play()
+            Debris:AddItem(s, 2.5)
+            return s
+        end
+        local speed = (on and 1.18 or 0.86) * (big and 0.85 or 1)
+        local s = play(on and SOUND_ON or SOUND_OFF, big and 0.7 or 0.6, speed)
+        task.delay(0.35, function()
+            if s.Parent and s.TimeLength == 0 then
+                play(SOUND_FALLBACK, 0.55, on and 1.35 or 0.85)
+            end
+        end)
+    end)
+end
+
+local function FloatCenter()
+    local s = Screen.AbsoluteSize
+    return s.X * Config.FloatX, s.Y * Config.FloatY
+end
+
+local function FxRing(cx, cy, size, thick, dur, color)
+    local r = New("Frame", {
+        Size = UDim2.fromOffset(6, 6),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromOffset(cx, cy),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ZIndex = 60,
+    }, Screen)
+    Corner(r, 9999)
+    local st = Stroke(r, color or Theme.Accent, thick, 0.05)
+    Tween(r, dur, { Size = UDim2.fromOffset(size, size) }, Enum.EasingStyle.Quint)
+    Tween(st, dur, { Transparency = 1, Thickness = 0.5 }, Enum.EasingStyle.Quad)
+    Debris:AddItem(r, dur + 0.15)
+end
+
+local function FxSparks(cx, cy, spread, count, dist)
+    for i = 1, count do
+        local ang = math.random() * math.pi * 2
+        local d = dist * (0.45 + math.random() * 0.8)
+        local sz = math.random(3, 6)
+        local px = cx + (math.random() - 0.5) * spread
+        local col = (i % 3 == 0) and Color3.new(1, 1, 1) or ((i % 2 == 0) and Theme.Accent or Theme.Accent2)
+        local p = New("Frame", {
+            Size = UDim2.fromOffset(sz, sz),
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset(px, cy),
+            BorderSizePixel = 0,
+            BackgroundColor3 = col,
+            ZIndex = 61,
+        }, Screen)
+        Corner(p, 3)
+        local dur = 0.45 + math.random() * 0.45
+        Tween(p, dur, {
+            Position = UDim2.fromOffset(px + math.cos(ang) * d, cy + math.sin(ang) * d * 0.85),
+            BackgroundTransparency = 1,
+            Size = UDim2.fromOffset(1, 1),
+        }, Enum.EasingStyle.Quint)
+        Debris:AddItem(p, dur + 0.15)
+    end
+end
+
+local function FxBeam(cx, cy, w)
+    local b = New("Frame", {
+        Size = UDim2.fromOffset(w, 4),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromOffset(cx, cy),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        ZIndex = 62,
+    }, Screen)
+    New("UICorner", { CornerRadius = UDim.new(0.5, 0) }, b)
+    New("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Theme.Accent2),
+            ColorSequenceKeypoint.new(0.5, Color3.new(1, 1, 1)),
+            ColorSequenceKeypoint.new(1, Theme.Accent),
+        }),
+    }, b)
+    Stroke(b, Theme.Accent, 5, 0.65)
+    Debris:AddItem(b, 2)
+    return b
+end
+
+local AnimToken = 0
+
+local function PlayOpen()
+    AnimToken = AnimToken + 1
+    local token = AnimToken
+    Opening = true
+    local t = TargetScale()
+    local fx, fy = FloatCenter()
+
+    MainStroke.Thickness = 1.5
+    Main.Size = UDim2.fromOffset(BW, BH)
+    Main.Position = UDim2.fromOffset(fx, fy)
+    Main.GroupTransparency = 1
+    MainScale.Scale = t * 0.12
+    Main.Visible = true
+
+    PlayToggleSound(true, true)
+    FxRing(fx, fy, 120, 3, 0.55)
+    FxSparks(fx, fy, 6, 12, 60)
+    pcall(function()
+        local fl = New("Frame", {
+            Size = UDim2.fromScale(1, 1),
+            BackgroundColor3 = Theme.Accent,
+            BackgroundTransparency = 0.9,
+            BorderSizePixel = 0,
+            ZIndex = 58,
+        }, Screen)
+        Tween(fl, 0.6, { BackgroundTransparency = 1 })
+        task.delay(0.65, function()
+            fl:Destroy()
+        end)
+        for i = 1, 3 do
+            task.delay(i * 0.1, function()
+                FxRing(fx, fy, 80 + i * 70, 2, 0.6, (i % 2 == 0) and Theme.Accent2 or Theme.Accent)
+            end)
+        end
+    end)
+
+    Tween(Main, 0.3, { GroupTransparency = 0 })
+    Tween(Main, 0.6, { Position = UDim2.fromScale(Config.WindowX, Config.WindowY) }, Enum.EasingStyle.Quint)
+    Tween(MainScale, 0.65, { Scale = t }, Enum.EasingStyle.Back)
+
+    task.delay(0.5, function()
+        if token ~= AnimToken then
+            return
+        end
+        local ap, asz = Main.AbsolutePosition, Main.AbsoluteSize
+        FxRing(ap.X + asz.X / 2, ap.Y + asz.Y / 2, math.max(asz.X, asz.Y) * 1.05, 2, 0.7, Theme.Accent2)
+        FxRing(ap.X + asz.X / 2, ap.Y + asz.Y / 2, math.max(asz.X, asz.Y) * 1.35, 1, 0.9, Theme.Accent)
+        FxSparks(ap.X + asz.X / 2, ap.Y + asz.Y / 2, math.max(asz.X, asz.Y) * 0.5, 22, 120)
+    end)
+    task.delay(0.68, function()
+        if token == AnimToken then
+            Opening = false
+        end
+    end)
+end
+
+local function PlayClose()
+    AnimToken = AnimToken + 1
+    local token = AnimToken
+    Opening = true
+    PlayToggleSound(false, true)
+
+    local s0 = MainScale.Scale
+    local function alive()
+        return token == AnimToken
+    end
+
+    Tween(MainScale, 0.14, { Scale = s0 * 1.03 }, Enum.EasingStyle.Sine)
+    Tween(MainStroke, 0.3, { Thickness = 3.5 }, Enum.EasingStyle.Sine)
+
+    task.delay(0.14, function()
+        if not alive() then
+            return
+        end
+        Tween(Main, 0.36, { GroupTransparency = 1 }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+        Tween(MainScale, 0.36, { Scale = s0 * 0.97 }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+    end)
+
+    task.delay(0.5, function()
+        if not alive() then
+            return
+        end
+        local ap, asz = Main.AbsolutePosition, Main.AbsoluteSize
+        local cx, cy = ap.X + asz.X / 2, ap.Y + asz.Y / 2
+        local w = math.max(asz.X, 40)
+
+        Main.Visible = false
+        Main.Size = UDim2.fromOffset(BW, BH)
+        Main.Position = UDim2.fromScale(Config.WindowX, Config.WindowY)
+        MainScale.Scale = s0
+        MainStroke.Thickness = 1.5
+
+        local beam = FxBeam(cx, cy, w)
+        FxRing(cx, cy, w * 0.75, 3, 0.6)
+        FxRing(cx, cy, w * 0.45, 2, 0.5, Theme.Accent2)
+        FxSparks(cx, cy, w, 28, 150 * math.max(s0, 0.6))
+        FxSparks(cx, cy, w * 0.6, 24, 230 * math.max(s0, 0.6))
+        FxRing(cx, cy, w * 1.1, 1, 0.8, Theme.Accent)
+        pcall(function()
+            local fl = New("Frame", {
+                Size = UDim2.fromScale(1, 1),
+                BackgroundColor3 = Theme.Accent,
+                BackgroundTransparency = 0.86,
+                BorderSizePixel = 0,
+                ZIndex = 58,
+            }, Screen)
+            Tween(fl, 0.55, { BackgroundTransparency = 1 })
+            task.delay(0.6, function()
+                fl:Destroy()
+            end)
+            for i = 1, 4 do
+                task.delay(i * 0.08, function()
+                    FxRing(cx, cy, w * (0.4 + i * 0.35), 2, 0.7, (i % 2 == 0) and Theme.Accent2 or Theme.Accent)
+                end)
+            end
+        end)
+        Tween(beam, 0.26, { Size = UDim2.fromOffset(18, 18) }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+
+        task.delay(0.28, function()
+            local fx, fy = FloatCenter()
+            Tween(beam, 0.36, {
+                Position = UDim2.fromOffset(fx, fy),
+                Size = UDim2.fromOffset(8, 8),
+            }, Enum.EasingStyle.Cubic, Enum.EasingDirection.InOut)
+            task.delay(0.36, function()
+                beam:Destroy()
+                FxRing(fx, fy, 100, 3, 0.55)
+                FxSparks(fx, fy, 6, 12, 50)
+                if alive() then
+                    Opening = false
+                end
+            end)
+        end)
+    end)
+end
+
+local function SetWindow(visible)
+    SetConfig("WindowVisible", visible)
+    if visible then
+        PlayOpen()
+    else
+        PlayClose()
+    end
+end
+
+local function SavePosition(target, kx, ky)
+    local s = Screen.AbsoluteSize
+    if s.X <= 0 or s.Y <= 0 then
+        return
+    end
+    local c = target.AbsolutePosition + target.AbsoluteSize / 2
+    local fx = math.clamp(c.X / s.X, 0.02, 0.98)
+    local fy = math.clamp(c.Y / s.Y, 0.02, 0.98)
+    target.Position = UDim2.fromScale(fx, fy)
+    SetConfig(kx, math.floor(fx * 10000) / 10000)
+    SetConfig(ky, math.floor(fy * 10000) / 10000)
+end
+
+local function MakeDraggable(handle, target, kx, ky, onClick)
+    local dragging, dragInput, startPos, startCenter, moved = false, nil, nil, nil, false
+
+    handle.InputBegan:Connect(function(input)
+        if IsPointer(input) then
+            dragging = true
+            moved = false
+            dragInput = input
+            startPos = input.Position
+            startCenter = target.AbsolutePosition + target.AbsoluteSize / 2
+        end
+    end)
+
+    Track(UIS.InputChanged:Connect(function(input)
+        if not dragging or not IsMove(input) then
+            return
+        end
+        if input.UserInputType == Enum.UserInputType.Touch and input ~= dragInput then
+            return
+        end
+        local d = input.Position - startPos
+        if d.Magnitude > 8 then
+            moved = true
+        end
+        if moved then
+            local s = Screen.AbsoluteSize
+            target.Position = UDim2.fromOffset(
+                math.clamp(startCenter.X + d.X, 0, s.X),
+                math.clamp(startCenter.Y + d.Y, 0, s.Y)
+            )
+        end
+    end))
+
+    Track(UIS.InputEnded:Connect(function(input)
+        if dragging and IsPointer(input) then
+            if input.UserInputType == Enum.UserInputType.Touch and input ~= dragInput then
+                return
+            end
+            dragging = false
+            if moved then
+                SavePosition(target, kx, ky)
+            elseif onClick then
+                onClick()
+            end
+        end
+    end))
+end
+
+local ActiveToast
+local function Toast(text, on)
+    if ActiveToast then
+        ActiveToast:Destroy()
+        ActiveToast = nil
+    end
+    local t = New("TextLabel", {
+        Size = UDim2.fromOffset(0, 38),
+        AutomaticSize = Enum.AutomaticSize.X,
+        AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new(0.5, 0, 1, 48),
+        BorderSizePixel = 0,
+        Text = text,
+        TextSize = 12,
+        Font = FNT.M,
+        BackgroundColor3 = Theme.Surface2,
+        TextColor3 = Theme.Text,
+        ZIndex = 300,
+    }, Screen)
+    Corner(t, 19)
+    Stroke(t, Theme.Accent, 1, 0.55)
+    Pad(t, 38, 18, 0, 0)
+    local dot = New("Frame", {
+        Size = UDim2.fromOffset(8, 8),
+        Position = UDim2.new(0, -24, 0.5, -4),
+        BorderSizePixel = 0,
+        BackgroundColor3 = (on == true) and RGB(70, 200, 120) or (on == false and Theme.Muted or Theme.Accent),
+    }, t)
+    Corner(dot, 4)
+    ActiveToast = t
+    local bar = New("Frame", {
+        Size = UDim2.new(1, -24, 0, 2),
+        Position = UDim2.new(0, 12, 1, -3),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Theme.Accent,
+        BackgroundTransparency = 0.2,
+    }, t)
+    Corner(bar, 1)
+    Tween(bar, 1.7, { Size = UDim2.new(0, 0, 0, 2) }, Enum.EasingStyle.Linear)
+    Tween(t, 0.35, { Position = UDim2.new(0.5, 0, 1, -26) }, Enum.EasingStyle.Back)
+    task.delay(1.7, function()
+        if ActiveToast == t then
+            Tween(t, 0.25, { Position = UDim2.new(0.5, 0, 1, 48) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+            task.delay(0.3, function()
+                t:Destroy()
+                if ActiveToast == t then
+                    ActiveToast = nil
+                end
+            end)
+        end
+    end)
+end
+
+--==================================================
+-- 4KINGS KIOSK AUTO FARM & AUTO SELL SYSTEM (logic)
+--==================================================
+
+local HB = {
+    unloadHitbox = function() end,
+    unloadDress = function() end,
+    unloadESP = function() end,
+}
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+local FarmRemotes = ReplicatedStorage:WaitForChild("FarmRemotes", 10)
+local CancelAutoFarm = FarmRemotes and FarmRemotes:FindFirstChild("CancelAutoFarm")
+local EconomySell = ReplicatedStorage:WaitForChild("EconomySell", 10)
+local EconomyState = ReplicatedStorage:WaitForChild("EconomyState", 10)
+
+-- KIOSKS DATA
+local KIOSKS = {
+    Chompoo = {
+        name = "Chompoo",
+        label = "🍏 ตู้สวนชมพู่ (Chompoo Kiosk)",
+        item = "Chompoo",
+        maxCapacity = 100,
+        standCF = CFrame.new(-1519.9, 32.5, -3337.5),
+        kioskPos = Vector3.new(-1519.9, 32.5, -3340.2),
+        getPrompt = function()
+            local uj = Workspace:FindFirstChild("unlimitedJobs")
+            local arm = uj and uj:FindFirstChild("Chompoo_Arm")
+            local m = arm and arm:FindFirstChild("Model")
+            local part = m and m:FindFirstChild("Part")
+            return part and part:FindFirstChildOfClass("ProximityPrompt")
+        end
+    },
+    Rock = {
+        name = "Rock",
+        label = "🪨 ตู้เหมืองหิน (Rock Kiosk)",
+        item = "Rock",
+        maxCapacity = 300,
+        standCF = CFrame.new(-3314.4, 60.3, -3225.0),
+        kioskPos = Vector3.new(-3314.4, 60.3, -3228.0),
+        getPrompt = function()
+            local uj = Workspace:FindFirstChild("unlimitedJobs")
+            local arm = uj and uj:FindFirstChild("Rock_Arm")
+            local m = arm and arm:FindFirstChild("Model")
+            local part = m and m:FindFirstChild("Part")
+            return part and part:FindFirstChildOfClass("ProximityPrompt")
+        end
+    }
+}
+
+-- KIOSKS (auto-discovered from Workspace.unlimitedJobs, e.g. Chompoo_Arm; replaces the fixed entries above)
+do
+    local function findArm(key)
+        local uj = Workspace:FindFirstChild("unlimitedJobs")
+        if not uj then return nil end
+        local arm = uj:FindFirstChild(key .. "_Arm")
+        if arm then return arm end
+        local lk = key:lower()
+        for _, c in ipairs(uj:GetChildren()) do
+            if c.Name:lower():find(lk, 1, true) then return c end
+        end
+        return nil
+    end
+
+    local function armPart(key)
+        local arm = findArm(key)
+        if not arm then return nil end
+        -- the arm has several nested "Model"/"Part" children, so locate the part that holds the prompt
+        local prompt = arm:FindFirstChildWhichIsA("ProximityPrompt", true)
+        if prompt and prompt.Parent and prompt.Parent:IsA("BasePart") then
+            return prompt.Parent
+        end
+        return arm:FindFirstChildWhichIsA("BasePart", true)
+    end
+
+    local function addKiosk(key, label, capacity)
+        local k = {
+            name = key,
+            label = label,
+            item = key,
+            maxCapacity = capacity,
+            getPrompt = function()
+                local arm = findArm(key)
+                return arm and arm:FindFirstChildWhichIsA("ProximityPrompt", true)
+            end,
+        }
+        setmetatable(k, {
+            __index = function(_, field)
+                local p = armPart(key)
+                if field == "kioskPos" then
+                    return p and p.Position or Vector3.new(0, -5000, 0)
+                elseif field == "standCF" then
+                    return p and CFrame.new(p.Position + Vector3.new(0, 4, 3)) or nil
+                end
+            end,
+        })
+        KIOSKS[key] = k
+    end
+
+    addKiosk("Chompoo", "🍏 ตู้สวนชมพู่ (Chompoo Kiosk)", 100)
+    addKiosk("Rock", "🪨 ตู้เหมืองหิน (Rock Kiosk)", 300)
+    addKiosk("Carrot", "🥕 ตู้สวนแครอท (Carrot Kiosk)", 100)
+    addKiosk("Apple", "🍎 ตู้สวนแอปเปิล (Apple Kiosk)", 100)
+    addKiosk("Avocado", "🥑 ตู้สวนอะโวคาโด (Avocado Kiosk)", 100)
+    addKiosk("Wood", "🪵 ตู้ตัดไม้ (Wood Kiosk)", 100)
+end
+
+-- PROMPT FIRER
+local function firePrompt(prompt)
+    if not prompt or not prompt.Parent then return false end
+    if fireproximityprompt then
+        pcall(function() fireproximityprompt(prompt, 0) end)
+        pcall(function() fireproximityprompt(prompt) end)
+        return true
+    end
+    pcall(function()
+        prompt:InputHoldBegin()
+        task.wait(prompt.HoldDuration > 0 and (prompt.HoldDuration + 0.05) or 0.05)
+        prompt:InputHoldEnd()
+    end)
+    return true
+end
+
+-- TELEPORT ENGINE
+local function stopTween()
+    -- kept for compatibility (nothing to cancel with instant teleport)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local bv = hrp:FindFirstChild("FarmBV")
+        if bv then bv:Destroy() end
+    end
+end
+
+-- FREEZE / UNFREEZE (do NOT anchor: an anchored character stops replicating, so other players
+-- would still see us on the ground. Instead: hold still with a BodyVelocity + keep collisions off.)
+local MOVE = { conn = nil }
+
+function MOVE.unfreeze(hrp)
+    if MOVE.conn then
+        MOVE.conn:Disconnect()
+        MOVE.conn = nil
+    end
+    if hrp then
+        local bv = hrp:FindFirstChild("FarmBV")
+        if bv then bv:Destroy() end
+        hrp:SetAttribute("LRIS_Hidden", nil)
+        local hum = hrp.Parent and hrp.Parent:FindFirstChildOfClass("Humanoid")
+        if hum then hum.PlatformStand = false end
+    end
+end
+
+function MOVE.freeze(hrp)
+    if not hrp then return end
+    hrp:SetAttribute("LRIS_Hidden", true)
+    local bv = hrp:FindFirstChild("FarmBV")
+    if not bv then
+        bv = Instance.new("BodyVelocity")
+        bv.Name = "FarmBV"
+        bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+        bv.Velocity = Vector3.zero
+        bv.Parent = hrp
+    end
+    local hum = hrp.Parent and hrp.Parent:FindFirstChildOfClass("Humanoid")
+    if hum then hum.PlatformStand = true end
+
+    if MOVE.conn then MOVE.conn:Disconnect() end
+    MOVE.conn = RunService.Stepped:Connect(function()
+        local c = hrp.Parent
+        if not c or not hrp:GetAttribute("LRIS_Hidden") then
+            MOVE.unfreeze(hrp)
+            return
+        end
+        for _, p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
+        end
+    end)
+end
+
+-- tween the root part to a CFrame at `speed` studs/second
+local function tweenPart(hrp, cf, speed)
+    if not hrp or not hrp.Parent then return false end
+    local dist = (hrp.Position - cf.Position).Magnitude
+    local t = math.max(dist / math.max(speed or 200, 10), 0.05)
+    local tw = TweenService:Create(hrp, TweenInfo.new(t, Enum.EasingStyle.Linear), { CFrame = cf })
+    local done = false
+    local conn = tw.Completed:Connect(function() done = true end)
+    tw:Play()
+    local t0 = os.clock()
+    while not done and hrp.Parent and os.clock() - t0 < t + 2 do
+        task.wait()
+    end
+    conn:Disconnect()
+    pcall(function() tw:Cancel() end)
+    return hrp.Parent ~= nil
+end
+
+-- instant = true  -> always teleport
+-- otherwise: if "Farm Underground" is on, travel as a tween underground (down -> across -> up),
+--            if it is off, teleport.
+local function tweenTo(targetCF, instant, keepFrozen)
+    if not targetCF then return false end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+
+    -- coming up from underground: unfreeze first
+    if hrp:GetAttribute("LRIS_Hidden") then
+        MOVE.unfreeze(hrp)
+    end
+
+    if (hrp.Position - targetCF.Position).Magnitude < 4 then
+        if keepFrozen then MOVE.freeze(hrp) end
+        return true
+    end
+
+    hrp.AssemblyLinearVelocity = Vector3.zero
+
+    if instant or not Config.UseTween then
+        if keepFrozen then MOVE.freeze(hrp) end -- keepFrozen = stay held in place at the target (underground)
+        hrp.CFrame = targetCF
+        return true
+    end
+
+    local start = hrp.Position
+    local goal = targetCF.Position
+    local depth = Config.UndergroundDepth or 15
+    local speed = Config.TweenSpeed or 200
+    local lowY = math.max(math.min(start.Y, goal.Y) - depth, -300)
+
+    MOVE.freeze(hrp)
+
+    local ok = tweenPart(hrp, CFrame.new(start.X, lowY, start.Z), speed)           -- 1) go down
+    ok = ok and tweenPart(hrp, CFrame.new(goal.X, lowY, goal.Z), speed)           -- 2) travel underground
+    ok = ok and tweenPart(hrp, targetCF, speed)                                    -- 3) come up at the target
+
+    if hrp.Parent then
+        if not keepFrozen then
+            MOVE.unfreeze(hrp)
+        end
+        hrp.AssemblyLinearVelocity = Vector3.zero
+    end
+    return ok
+end
+
+-- DATA HELPER
+local function getPlayerData()
+    local d = {}
+    pcall(function()
+        local DataSystemCS = require(ReplicatedStorage.Modules.Data.DataSystemCS)
+        d = DataSystemCS.GetData().PlayerData
+    end)
+    return d
+end
+
+local function getItemCount(itemName)
+    local count = 0
+    pcall(function()
+        local pData = getPlayerData()
+        local raw = pData.__raw or pData
+        count = raw[itemName] or 0
+    end)
+    return count
+end
+
+-- PRESS KIOSK ACTION
+local function pressKiosk(kioskKey)
+    local kData = KIOSKS[kioskKey]
+    if not kData then return false end
+    local prompt = kData.getPrompt()
+    if not prompt then
+        Toast("⚠️ ไม่พบปุ่มกดตู้ " .. kData.label, false)
+        return false
+    end
+
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local dist = (hrp.Position - kData.kioskPos).Magnitude
+        if dist > 8 then
+            tweenTo(kData.standCF)
+            task.wait(0.05)
+        end
+    end
+
+    firePrompt(prompt)
+    return true
+end
+
+-- SELL ALL ITEMS AT SHOP
+local isSelling = false
+local function SellAllItemsNow(notify)
+    if isSelling then return false end
+    isSelling = true
+
+    local shopPos = Vector3.new(135.9, 61.0, -1106.7)
+    local shopCF = CFrame.new(shopPos) + Vector3.new(0, 3, 3)
+
+    if notify then Toast("🛒 กำลังวาปไปร้านรับซื้อ (EconomyShop)...", true) end
+    tweenTo(shopCF)
+    task.wait(0.3)
+
+    local soldCount = 0
+    pcall(function()
+        local state = EconomyState and EconomyState:InvokeServer()
+        if state and state.items then
+            local pData = getPlayerData()
+            local raw = pData.__raw or pData
+            for _, item in ipairs(state.items) do
+                local have = raw[item.name] or 0
+                if have > 0 then
+                    EconomySell:FireServer(item.name, have, item.price)
+                    soldCount = soldCount + have
+                    task.wait(0.15)
+                end
+            end
+        end
+    end)
+
+    if notify then
+        Toast("💰 ขายสินค้าเรียบร้อย! (" .. soldCount .. " ชิ้น)", true)
+    end
+
+    task.wait(0.4)
+    isSelling = false
+    return true
+end
+
+-- ROCK PROCESSING (แปรรูปหิน)
+-- Rock must be processed at the Processed Station (2 Rock -> 1 ore per cycle).
+local PR = {
+    event = nil,
+    stationCF = CFrame.new(1588.2, 31, -1316.9),
+    state = { running = false, stones = nil, stopReason = nil },
+    processing = false,
+    cancel = false,
+    order = { "Carrot", "Chompoo", "Wood", "Avocado", "Apple", "Rock", "Cement", "Wire", "Hydrant", "Light", "Crystal", "Halloween" },
+    curKey = nil,
+    lastKey = nil,
+    resumeKey = nil,
+}
+pcall(function()
+    local mf = ReplicatedStorage:WaitForChild("Main_Folder", 10)
+    local pr = mf and mf:WaitForChild("Processed", 10)
+    PR.event = pr and pr:WaitForChild("ProcessedEvent", 10)
+end)
+
+if PR.event then
+    Track(PR.event.OnClientEvent:Connect(function(kind, a, b, c)
+        if kind == "Started" then
+            PR.state.running = true
+            PR.state.stopReason = nil
+            PR.state.stones = a
+        elseif kind == "Stone" then
+            PR.state.stones = a
+        elseif kind == "Reward" then
+            PR.state.stones = c
+        elseif kind == "Stopped" then
+            PR.state.running = false
+            PR.state.stopReason = a
+        end
+    end))
+end
+
+function PR.getPrompt()
+    local station = Workspace:FindFirstChild("ProcessedStation")
+    return station and station:FindFirstChildWhichIsA("ProximityPrompt", true)
+end
+
+function PR.run(notify, manual)
+    if PR.processing or not PR.event then return false end
+    PR.processing = true
+    PR.cancel = false
+
+    if notify then Toast("⚙️ กำลังวาปไปจุดแปรรูปหิน...", true) end
+
+    local prompt = PR.getPrompt()
+    local stationCF = PR.stationCF
+    if prompt and prompt.Parent and prompt.Parent:IsA("BasePart") then
+        stationCF = CFrame.new(prompt.Parent.Position + Vector3.new(0, 3, 3))
+    end
+    tweenTo(stationCF)
+    task.wait(0.4)
+
+    local failedStarts = 0
+    while not PR.cancel and (manual or Config.KioskFarmEnabled) and failedStarts < 4 do
+        local stones = PR.state.stones
+        if not PR.state.running then
+            stones = getItemCount("Rock")
+        end
+        if stones and stones < 2 then break end
+
+        if not PR.state.running then
+            -- start the same way the game does: press the station prompt
+            PR.event:FireServer("GetStone")
+            if prompt then firePrompt(prompt) end
+            task.wait(1)
+            if not PR.state.running then
+                PR.event:FireServer("Start")
+                task.wait(1)
+            end
+            if not PR.state.running then
+                failedStarts = failedStarts + 1
+                if PR.state.stopReason == "Full" then
+                    Toast("⚠️ กระเป๋าเต็ม แปรรูปต่อไม่ได้", false)
+                    break
+                end
+            else
+                failedStarts = 0
+            end
+        else
+            task.wait(1)
+        end
+    end
+
+    if PR.state.running then
+        PR.event:FireServer("Stop")
+        task.wait(0.3)
+    end
+
+    if notify then Toast("✅ แปรรูปหินเสร็จแล้ว", true) end
+    PR.processing = false
+    return true
+end
+
+-- Other players' Player.Character is a decoy in this game (a lone Part at 0,500,0).
+-- The real rig is the model in Workspace named after the player.
+function PR.getChar(plr)
+    local m = Workspace:FindFirstChild(plr.Name)
+    if m and m:IsA("Model") and m:FindFirstChild("HumanoidRootPart") then
+        return m
+    end
+    local c = plr.Character
+    if c and c:FindFirstChild("HumanoidRootPart") then
+        return c
+    end
+    return nil
+end
+
+-- CANCEL AUTO FARM (IN-GAME)
+local function StopInGameAutoFarm()
+    pcall(function()
+        if CancelAutoFarm then
+            CancelAutoFarm:FireServer()
+        end
+    end)
+    Toast("🛑 ยกเลิก AutoFarm ของตู้ในเกมแล้ว", false)
+end
+
+-- UNDERGROUND / GROUND FARMING
+function PR.hide(kData)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not kData then return end
+    local depth = Config.UndergroundDepth or 15
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    MOVE.freeze(hrp)
+    tweenPart(hrp, CFrame.new(kData.kioskPos + Vector3.new(0, -depth, 0)), Config.TweenSpeed or 200)
+end
+
+function PR.surface(kData)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not hrp:GetAttribute("LRIS_Hidden") then return end
+    if kData and kData.standCF then
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        tweenPart(hrp, kData.standCF, Config.TweenSpeed or 200)
+    else
+        -- no known stand position (e.g. after a loop point): find the ground above us
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { char }
+        local res = Workspace:Raycast(hrp.Position + Vector3.new(0, 300, 0), Vector3.new(0, -600, 0), params)
+        if res then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            tweenPart(hrp, CFrame.new(res.Position + Vector3.new(0, 4, 0)), Config.TweenSpeed or 200)
+        end
+    end
+    if hrp.Parent then
+        MOVE.unfreeze(hrp)
+    end
+end
+
+-- wait until the minion state matches `want` (true = running), up to `timeout` seconds
+function PR.waitMinion(want, timeout)
+    local t0 = os.clock()
+    while os.clock() - t0 < timeout do
+        if (LocalPlayer:GetAttribute("MinionActive") == true) == want then return true end
+        task.wait(0.05)
+    end
+    return (LocalPlayer:GetAttribute("MinionActive") == true) == want
+end
+
+-- BLACK JOBS (Cement / Wire stealing): walk to a free site, press the prompt, auto-play the timing minigame
+PR.jobs = {
+    Cement = { label = "🧱 ปูน (Cement)", folder = "Cement_Stealing", prompt = "CementStealingPrompt", item = "Cement", stealTime = 10 },
+    Wire = { label = "🔌 สายไฟ (Wire)", folder = "Wire_Stealing", prompt = "WireStealingPrompt", item = "Wire", stealTime = 10 },
+}
+PR.jobProgress = { Cement = 0, Wire = 0 }
+PR.siteBusy = {}
+PR.jobRunning = false
+
+function PR.findSites(job)
+    local list = {}
+    local bj = Workspace:FindFirstChild("BlackJobs")
+    if not bj then return list end
+    for _, m in ipairs(bj:GetChildren()) do
+        if m.Name == job.folder then
+            local prompt = m:FindFirstChild(job.prompt, true)
+            local main = m:FindFirstChild("MainPart")
+            if prompt and prompt:IsA("ProximityPrompt") and main and main:IsA("BasePart") then
+                list[#list + 1] = {
+                    prompt = prompt,
+                    pos = main.Position,
+                    avail = main:FindFirstChild("Available"),         -- IntValue: 1 = still has loot, 0 = already taken
+                    regen = main:FindFirstChild("IsRegenning", true), -- BoolValue: true while it refills
+                }
+            end
+        end
+    end
+    return list
+end
+
+-- a site is free only if the game says it still has loot (not already taken / not regenerating)
+function PR.siteFree(st)
+    if not st.prompt or not st.prompt.Parent or not st.prompt.Enabled then return false end
+    if st.avail and st.avail:IsA("IntValue") and st.avail.Value <= 0 then return false end
+    if st.regen and st.regen:IsA("BoolValue") and st.regen.Value then return false end
+    return true
+end
+
+function PR.pickSite(job, origin)
+    local best, bestD
+    local now = os.clock()
+    for _, st in ipairs(PR.findSites(job)) do
+        if PR.siteFree(st) and (PR.siteBusy[st.prompt] or 0) < now then
+            local d = (st.pos - origin).Magnitude
+            if not bestD or d < bestD then
+                best, bestD = st, d
+            end
+        end
+    end
+    return best
+end
+
+-- press the minigame's own "click" (same as pressing E / the touch button)
+function PR.clickMinigame(main)
+    task.spawn(function()
+        local btn = main and main:FindFirstChild("Click")
+        local done = false
+        if btn and getconnections then
+            pcall(function()
+                for _, c in ipairs(getconnections(btn.MouseButton1Click)) do
+                    c:Fire()
+                    done = true
+                end
+            end)
+        end
+        if not done and btn and firesignal then
+            pcall(function()
+                firesignal(btn.MouseButton1Click)
+                done = true
+            end)
+        end
+        if not done then
+            pcall(function()
+                local vim = game:GetService("VirtualInputManager")
+                vim:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+                task.wait(0.03)
+                vim:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+            end)
+        end
+    end)
+end
+
+do
+    local lastClick = 0
+    Track(RunService.RenderStepped:Connect(function()
+        if not PR.jobRunning then return end
+        local mg = LocalPlayer:FindFirstChildOfClass("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Minigame")
+        if not mg or not mg.Enabled then return end
+        local main = mg:FindFirstChild("Main")
+        local bar = main and main:FindFirstChild("Bar")
+        local red = bar and bar:FindFirstChild("RedBar")
+        local zone = bar and bar:FindFirstChild("Zone")
+        if not red or not zone then return end
+        if os.clock() - lastClick < 0.3 then return end
+
+        local rx, rw = red.AbsolutePosition.X, red.AbsoluteSize.X
+        local zx, zw = zone.AbsolutePosition.X, zone.AbsoluteSize.X
+        local overlap = math.min(rx + rw, zx + zw) - math.max(rx, zx)
+        if overlap >= math.min(rw, zw) * 0.5 then
+            lastClick = os.clock()
+            PR.clickMinigame(main)
+        end
+    end))
+end
+
+-- wait until the character is standing on something (prompts can fail while we are still in the air)
+function PR.waitForLand(maxWait)
+    local t0 = os.clock()
+    while os.clock() - t0 < (maxWait or 1.5) do
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then return false end
+        if hum.FloorMaterial ~= Enum.Material.Air then return true end
+        task.wait(0.05)
+    end
+    return false
+end
+
+-- one theft: returns how many pieces were gained
+function PR.stealOnce(key)
+    local job = PR.jobs[key]
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not job or not hrp or not hum or hum.Health <= 0 then
+        -- dead or respawning: wait and try again
+        task.wait(1)
+        return 0
+    end
+
+    local site = PR.pickSite(job, hrp.Position)
+    if not site then
+        Toast("⏳ จุดของ " .. job.label .. " ถูกเก็บไปหมดแล้ว รอรีเจนสักครู่", false)
+        task.wait(3)
+        return 0
+    end
+
+    PR.siteBusy[site.prompt] = os.clock() + 20
+    local before = getItemCount(job.item)
+
+    tweenTo(CFrame.new(site.pos + Vector3.new(0, 3, 3)))
+    if not PR.waitForLand(1.5) then
+        local h = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+        PR.waitForLand(1)
+    end
+    task.wait(0.2)
+    pcall(function() site.prompt.RequiresLineOfSight = false end)
+
+    -- someone may have taken it while we were travelling: skip it and pick another site next time
+    if not PR.siteFree(site) then
+        PR.siteBusy[site.prompt] = os.clock() + 8
+        return 0
+    end
+
+    PR.jobRunning = true
+    local mg = LocalPlayer.PlayerGui:FindFirstChild("Minigame")
+    local started = false
+    for _ = 1, 3 do
+        if not Config.KioskFarmEnabled then break end
+        firePrompt(site.prompt)
+        local t0 = os.clock()
+        while os.clock() - t0 < 2.5 do
+            if mg and mg.Enabled then started = true break end
+            task.wait(0.05)
+        end
+        if started then break end
+    end
+
+    if started then
+        -- the auto-player clicks; wait until the minigame closes
+        local t0 = os.clock()
+        while mg.Enabled and os.clock() - t0 < 30 and Config.KioskFarmEnabled do
+            task.wait(0.1)
+        end
+        -- the server then runs the steal timer: stay still until the item arrives
+        local t1 = os.clock()
+        while os.clock() - t1 < (job.stealTime + 4) and Config.KioskFarmEnabled do
+            if getItemCount(job.item) > before then break end
+            task.wait(0.25)
+        end
+    end
+    PR.jobRunning = false
+
+    local gained = math.max(getItemCount(job.item) - before, 0)
+    PR.siteBusy[site.prompt] = os.clock() + (gained > 0 and 5 or 10) -- siteFree() also checks the game's own "Available" flag
+    task.wait((Config.JobDelay or 0.5) + math.random() * 0.15)
+    return gained
+end
+
+-- TIMED LOOP EVENTS (Loop Hydrant / Loop Lights / Loop Crystal): 5 collect points each, hold = 0
+PR.loops = {
+    Hydrant = { label = "🚰 Loop Hydrant", folder = "Fire_Hydrant" },
+    Light = { label = "💡 Loop Lights", folder = "Street_Light" },
+    Crystal = { label = "💎 Loop Crystal", folder = "CRYSTAL" },
+    Halloween = { label = "🎃 Halloween (เคาะประตู)", kind = "door" },
+}
+PR.loopBusy = {}
+
+-- is another player already at this point/door? (or is the door's knock sound playing right now)
+function PR.siteTaken(st)
+    if not Config.SkipOccupied then return false end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            local c = PR.getChar(plr)
+            local hrp = c and c:FindFirstChild("HumanoidRootPart")
+            if hrp and (hrp.Position - st.pos).Magnitude <= 12 then
+                return true
+            end
+        end
+    end
+    return st.knock ~= nil and st.knock.Playing
+end
+
+function PR.loopSites(key)
+    local list = {}
+    if PR.loops[key].kind == "door" then
+        -- Halloween: every HalloweenDoor model has one "Trick or Treat?" prompt
+        local h = Workspace:FindFirstChild("Halloween")
+        if h then
+            for _, m in ipairs(h:GetChildren()) do
+                if m.Name == "HalloweenDoor" then
+                    local d = m:FindFirstChildWhichIsA("ProximityPrompt", true)
+                    if d and d.Parent and d.Parent:IsA("BasePart") then
+                        list[#list + 1] = { prompt = d, pos = d.Parent.Position, knock = d.Parent:FindFirstChild("KnockSound") }
+                    end
+                end
+            end
+        end
+        return list
+    end
+    local ev = Workspace:FindFirstChild("Event")
+    local f = ev and ev:FindFirstChild(PR.loops[key].folder)
+    if not f then return list end
+    for _, d in ipairs(f:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and d.Parent and d.Parent:IsA("BasePart") then
+            list[#list + 1] = { prompt = d, pos = d.Parent.Position }
+        end
+    end
+    return list
+end
+
+-- true while at least one collect point is still available (prompt enabled)
+function PR.loopFree(key)
+    local isDoor = PR.loops[key].kind == "door"
+    local now = os.clock()
+    for _, st in ipairs(PR.loopSites(key)) do
+        if st.prompt.Enabled and (not isDoor or (PR.loopBusy[st.prompt] or 0) < now) and not PR.siteTaken(st) then
+            return true
+        end
+    end
+    return false
+end
+
+-- first selected loop event that has something to collect (these have priority over the kiosks)
+function PR.pendingLoop(list)
+    for _, k in ipairs(list) do
+        if PR.loops[k] and PR.loopFree(k) then return k end
+    end
+    return nil
+end
+
+-- collect one point; returns true if it was collected
+function PR.collectLoopOnce(key)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then
+        task.wait(1)
+        return false
+    end
+
+    local best, bestD
+    local now = os.clock()
+    for _, st in ipairs(PR.loopSites(key)) do
+        if st.prompt.Enabled and (PR.loopBusy[st.prompt] or 0) < now and not PR.siteTaken(st) then
+            local d = (st.pos - hrp.Position).Magnitude
+            if not bestD or d < bestD then best, bestD = st, d end
+        end
+    end
+    if not best then
+        task.wait(2)
+        return false
+    end
+
+    -- underground: stand just below the point (kept within the prompt's activation range) and stay held there
+    local ug = Config.FarmUnderground
+    local depth = math.min(Config.UndergroundDepth or 15, 7)
+    if ug then
+        tweenTo(CFrame.new(best.pos - Vector3.new(0, depth, 0)), false, true)
+    else
+        tweenTo(CFrame.new(best.pos + Vector3.new(0, 4, 0)))
+        PR.waitForLand(1.5)
+    end
+    task.wait(0.15)
+
+    -- somebody got here first while we were travelling: skip this one
+    if PR.siteTaken(best) then
+        PR.loopBusy[best.prompt] = os.clock() + 10
+        Toast("👥 มีคนอยู่ที่จุดนี้แล้ว ข้ามไปจุดอื่น", false)
+        return false
+    end
+
+    -- Halloween doors: knock, wait for the game's answer, then leave this door alone for a while
+    if PR.loops[key].kind == "door" then
+        local knocked = false
+        for _ = 1, 3 do
+            if not Config.KioskFarmEnabled or not best.prompt.Parent then break end
+            PR.halloweenAt = 0
+            pcall(function() best.prompt.RequiresLineOfSight = false end)
+            firePrompt(best.prompt)
+            local t1 = os.clock()
+            while os.clock() - t1 < 4 do
+                if PR.halloweenAt > 0 or not best.prompt.Enabled then knocked = true break end
+                task.wait(0.1)
+            end
+            if knocked then break end
+        end
+        if knocked then task.wait(2.5) end -- let the reward / jumpscare finish
+        PR.loopBusy[best.prompt] = os.clock() + (Config.DoorCooldown or 30)
+        return knocked
+    end
+
+    -- press the point, then wait for the game's own progress bar ("LoopCollect") to start and finish
+    -- (leaving early cancels the collection), then confirm that the point really got collected
+    local collected = false
+    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    for _ = 1, 3 do
+        if not Config.KioskFarmEnabled or not best.prompt.Parent then break end
+        pcall(function() best.prompt.RequiresLineOfSight = false end)
+        firePrompt(best.prompt)
+
+        -- 1) did the collecting start? (progress bar appears)
+        local started = false
+        local t0 = os.clock()
+        while os.clock() - t0 < 2.5 do
+            if pg and pg:FindFirstChild("LoopCollect") then started = true break end
+            if not best.prompt.Enabled then collected = true break end
+            task.wait(0.05)
+        end
+
+        -- 2) wait until the progress bar is gone (= finished); stay on the spot meanwhile
+        if started then
+            local t1 = os.clock()
+            while pg and pg:FindFirstChild("LoopCollect") and os.clock() - t1 < 30 and Config.KioskFarmEnabled do
+                task.wait(0.1)
+            end
+            -- 3) the server hides the point for us once it is credited
+            local t2 = os.clock()
+            while os.clock() - t2 < 2 do
+                if not best.prompt.Enabled then collected = true break end
+                task.wait(0.1)
+            end
+        end
+        if collected then break end
+    end
+    if not collected then
+        PR.loopBusy[best.prompt] = os.clock() + 5
+    end
+    return collected
+end
+
+PR.halloweenAt = 0
+do
+    local ev = ReplicatedStorage:FindFirstChild("HalloweenResult")
+    if ev and ev:IsA("RemoteEvent") then
+        Track(ev.OnClientEvent:Connect(function()
+            PR.halloweenAt = os.clock()
+        end))
+    end
+end
+
+-- MULTI-KIOSK HELPERS
+function PR.selected()
+    local list = {}
+    for _, key in ipairs(PR.order) do
+        if Config["Sel_" .. key] and (KIOSKS[key] or PR.jobs[key] or PR.loops[key]) then
+            list[#list + 1] = key
+        end
+    end
+    return list
+end
+
+function PR.threshold(key)
+    local k = KIOSKS[key]
+    if not k then return math.huge end
+    if key == "Rock" then
+        return k.maxCapacity -- Rock is full at 300
+    end
+    return k.maxCapacity -- full at 100 (Rock: 300)
+end
+
+function PR.isFull(key)
+    if PR.loops[key] then return not PR.loopFree(key) end -- a loop with nothing left to collect counts as "done"
+    local k = KIOSKS[key]
+    return k ~= nil and getItemCount(k.item) >= PR.threshold(key)
+end
+
+-- next selected kiosk (after `key`, wrapping) that is not full; returns `key` if none
+function PR.nextOpen(list, key)
+    local at = 1
+    for i, k in ipairs(list) do
+        if k == key then at = i break end
+    end
+    for step = 1, #list - 1 do
+        local k = list[(at - 1 + step) % #list + 1]
+        if not PR.isFull(k) then return k end
+    end
+    return key
+end
+
+-- MAIN KIOSK AUTO FARM LOOP
+task.spawn(function()
+    while Screen.Parent do
+        if Config.KioskFarmEnabled and not isSelling and not PR.processing then
+            local list = PR.selected()
+            if #list > 0 then
+                local inList = false
+                for _, k in ipairs(list) do
+                    if k == PR.curKey then inList = true break end
+                end
+                if not inList then PR.curKey = list[1] end
+
+                -- timed loop events have priority: do them as soon as something is available
+                local loopKey = PR.pendingLoop(list)
+                if loopKey and PR.curKey ~= loopKey then
+                    if PR.curKey and not PR.loops[PR.curKey] then PR.resumeKey = PR.curKey end
+                    PR.curKey = loopKey
+                end
+
+                local targetKey = PR.curKey
+                local kData = KIOSKS[targetKey]
+
+                -- Loop events (hydrant / lights / crystal): collect every available point
+                if PR.loops[targetKey] then
+                    if PR.lastKey ~= targetKey then
+                        if PR.lastKey ~= nil or LocalPlayer:GetAttribute("MinionActive") == true then
+                            pcall(function()
+                                if CancelAutoFarm then CancelAutoFarm:FireServer() end
+                            end)
+                            PR.waitMinion(false, 1.2)
+                        end
+                        PR.lastKey = targetKey
+                        Toast("🔄 เปลี่ยนไปฟาม " .. PR.loops[targetKey].label, true)
+                    end
+
+                    PR.collectLoopOnce(targetKey)
+
+                    if not PR.loopFree(targetKey) then
+                        -- everything collected: go back to what we were doing
+                        local back = PR.resumeKey
+                        PR.resumeKey = nil
+                        local backOk = false
+                        for _, k in ipairs(list) do
+                            if k == back then backOk = true break end
+                        end
+                        if backOk then
+                            PR.curKey = back
+                        else
+                            PR.curKey = PR.nextOpen(list, targetKey)
+                        end
+                        PR.surface(nil)
+                        Toast("✅ เก็บ " .. PR.loops[targetKey].label .. " ครบแล้ว", true)
+                    end
+                    task.wait(0.2)
+                    continue
+                end
+
+                -- Black Jobs (cement / wire) are done by hand, not by the minion
+                if PR.jobs[targetKey] then
+                    if PR.lastKey ~= targetKey then
+                        if PR.lastKey ~= nil or LocalPlayer:GetAttribute("MinionActive") == true then
+                            pcall(function()
+                                if CancelAutoFarm then CancelAutoFarm:FireServer() end
+                            end)
+                            PR.waitMinion(false, 1.2)
+                        end
+                        PR.lastKey = targetKey
+                        Toast("🔄 เปลี่ยนไปฟาม " .. PR.jobs[targetKey].label, true)
+                    end
+
+                    local gained = PR.stealOnce(targetKey)
+                    PR.jobProgress[targetKey] = (PR.jobProgress[targetKey] or 0) + gained
+                    if PR.jobProgress[targetKey] >= (Config.JobRoundAmount or 10) then
+                        PR.jobProgress[targetKey] = 0
+                        if Config.KioskFarmEnabled then
+                            PR.curKey = PR.nextOpen(list, targetKey)
+                        end
+                    end
+                    task.wait(0.3)
+                    continue
+                end
+
+                -- switch to a different kiosk
+                if PR.lastKey ~= targetKey then
+                    if PR.lastKey ~= nil or LocalPlayer:GetAttribute("MinionActive") == true then
+                        pcall(function()
+                            if CancelAutoFarm then CancelAutoFarm:FireServer() end
+                        end)
+                        PR.waitMinion(false, 1.2)
+                    end
+                    PR.lastKey = targetKey
+                    Toast("🔄 เปลี่ยนไปฟาม " .. kData.name, true)
+                    tweenTo(kData.standCF)
+                    local pressed = pressKiosk(targetKey)
+                    if pressed then
+                        -- continue as soon as the minion actually starts (retry the press once if it does not)
+                        if not PR.waitMinion(true, 1.0) then
+                            pressKiosk(targetKey)
+                            PR.waitMinion(true, 1.5)
+                        end
+                    elseif #list > 1 then
+                        -- kiosk not found: skip to the next one
+                        PR.curKey = PR.nextOpen(list, targetKey)
+                    end
+                    continue
+                end
+
+                local have = getItemCount(kData.item)
+
+                if have >= PR.threshold(targetKey) then
+                    -- kiosk is full: optional process/sell, then move on to the next selected kiosk
+                    if targetKey == "Rock" and Config.AutoProcessEnabled then
+                        Toast("📦 หินเต็ม (" .. have .. "/" .. kData.maxCapacity .. ")! วาปไปแปรรูป...", true)
+                        PR.run(false)
+                    elseif targetKey ~= "Rock" and Config.AutoSellEnabled then
+                        Toast("📦 " .. kData.name .. " เต็ม! วาปไปขายของ...", true)
+                        SellAllItemsNow(false)
+                    end
+
+                    if Config.KioskFarmEnabled then
+                        local nextKey = PR.nextOpen(list, targetKey)
+                        if nextKey ~= targetKey then
+                            PR.curKey = nextKey
+                        elseif PR.isFull(targetKey) then
+                            -- nothing else to farm and this one is still full: wait for it to be emptied
+                            task.wait(3)
+                        end
+                    end
+                else
+                    -- not full: make sure the kiosk (minion) is running
+                    local char = LocalPlayer.Character
+                    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                    if LocalPlayer:GetAttribute("MinionActive") ~= true then
+                        if hrp then
+                            PR.surface(kData)
+                            if (hrp.Position - kData.kioskPos).Magnitude > 8 then
+                                tweenTo(kData.standCF)
+                            end
+                            pressKiosk(targetKey)
+                            PR.waitMinion(true, 2.0)
+                        end
+                    elseif hrp then
+                        -- minion is running: stay on the ground or go underground
+                        local hidden = hrp:GetAttribute("LRIS_Hidden")
+                        if Config.FarmUnderground and not hidden then
+                            PR.hide(kData)
+                        elseif not Config.FarmUnderground and hidden then
+                            PR.surface(kData)
+                        end
+                    end
+                end
+            end
+        elseif not Config.KioskFarmEnabled then
+            -- farming stopped: never leave the character frozen underground
+            PR.surface(PR.lastKey and KIOSKS[PR.lastKey] or nil)
+        end
+        task.wait(0.3)
+    end
+end)
+
+--==================================================
+-- ANTI AFK (logic)
+--==================================================
+
+do
+    local VirtualUser = game:GetService("VirtualUser")
+    local on = Config.AntiAFK
+
+    Track(LocalPlayer.Idled:Connect(function()
+        if not on then
+            return
+        end
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+    end))
+
+    function HB.setAntiAFK(v)
+        on = v
+    end
+end
+
+
+--==================================================
+-- SAVE STATUS PILL
+--==================================================
+
+local SaveStates = {
+    idle = { "Auto Save", nil },
+    saving = { "Saving...", RGB(240, 190, 60) },
+    saved = { "Saved", RGB(70, 200, 120) },
+    failed = { "Save failed", RGB(235, 75, 90) },
+    unsupported = { "No file support", RGB(235, 75, 90) },
+}
+
+local function StatusPill(parent, width)
+    local pill = New("Frame", { Size = UDim2.fromOffset(width or 108, 26), BorderSizePixel = 0 }, parent)
+    Bind(pill, "BackgroundColor3", "Surface2")
+    Corner(pill, 13)
+    Bind(Stroke(pill, Theme.Stroke, 1, 0.3), "Color", "Stroke")
+
+    local dot = New("Frame", {
+        Size = UDim2.fromOffset(8, 8),
+        Position = UDim2.new(0, 11, 0.5, -4),
+        BorderSizePixel = 0,
+    }, pill)
+    Corner(dot, 4)
+
+    local label = Text(pill, "", 10, FNT.M, "Sub")
+    label.Position = UDim2.fromOffset(26, 0)
+    label.Size = UDim2.new(1, -30, 1, 0)
+
+    local current = "idle"
+    local function render()
+        local s = SaveStates[current]
+        label.Text = s[1]
+        dot.BackgroundColor3 = s[2] or Theme.Accent
+    end
+    OnTheme(render)
+
+    SaveHooks[#SaveHooks + 1] = function(state)
+        current = state
+        render()
+    end
+    return pill
+end
+
+
+local StatsGui = New("ScreenGui", {
+    Name = "LRIS_Stats",
+    ResetOnSpawn = false,
+    DisplayOrder = 999999,
+    IgnoreGuiInset = true,
+    Enabled = Config.StatsVisible,
+}, PlayerGui)
+
+local StatsBox = New("Frame", {
+    Size = UDim2.fromOffset(152, 30),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(Config.StatsX, Config.StatsY),
+    BorderSizePixel = 0,
+    BackgroundTransparency = 0.1,
+    Active = true,
+}, StatsGui)
+Bind(StatsBox, "BackgroundColor3", "Surface")
+Corner(StatsBox, 15)
+Bind(Stroke(StatsBox, Theme.Stroke, 1, 0.2), "Color", "Stroke")
+
+local FpsLabel = Text(StatsBox, "", 11, FNT.M, "Sub", Enum.TextXAlignment.Center)
+FpsLabel.RichText = true
+FpsLabel.Size = UDim2.new(0.5, -1, 1, 0)
+
+local MsLabel = Text(StatsBox, "", 11, FNT.M, "Sub", Enum.TextXAlignment.Center)
+MsLabel.RichText = true
+MsLabel.Position = UDim2.new(0.5, 1, 0, 0)
+MsLabel.Size = UDim2.new(0.5, -1, 1, 0)
+
+local StatsDivider = New("Frame", {
+    Size = UDim2.fromOffset(1, 14),
+    Position = UDim2.new(0.5, 0, 0.5, -7),
+    BorderSizePixel = 0,
+}, StatsBox)
+Bind(StatsDivider, "BackgroundColor3", "Stroke")
+
+MakeDraggable(StatsBox, StatsBox, "StatsX", "StatsY")
+
+local Metrics = { fps = 60, ping = 0 }
+
+do
+    local frames, acc = 0, 0
+    Track(RunService.RenderStepped:Connect(function(dt)
+        frames = frames + 1
+        acc = acc + dt
+        if acc >= 0.5 then
+            Metrics.fps = math.floor(frames / acc + 0.5)
+            frames, acc = 0, 0
+        end
+    end))
+end
+
+local function GetPing()
+    local ok, v = pcall(function()
+        return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    return (ok and type(v) == "number") and math.floor(v + 0.5) or 0
+end
+
+local function Level(value, good, mid, higherIsBetter)
+    local g, m, b = RGB(70, 200, 120), RGB(240, 190, 60), RGB(235, 75, 90)
+    if higherIsBetter then
+        return value >= good and g or (value >= mid and m or b)
+    end
+    return value <= good and g or (value <= mid and m or b)
+end
+
+local function RefreshStats()
+    Metrics.ping = GetPing()
+    local fc = Level(Metrics.fps, 50, 30, true)
+    local mc = Level(Metrics.ping, 80, 160, false)
+    local muted = "#" .. Theme.Muted:ToHex()
+    FpsLabel.Text = string.format(
+        '<font color="#%s"><b>%d</b></font> <font color="%s">FPS</font>',
+        fc:ToHex(), Metrics.fps, muted
+    )
+    MsLabel.Text = string.format(
+        '<font color="#%s"><b>%d</b></font> <font color="%s">MS</font>',
+        mc:ToHex(), Metrics.ping, muted
+    )
+end
+
+--==================================================
+-- TOP BAR
+--==================================================
+
+local Top = New("Frame", {
+    Size = UDim2.new(1, -56, 0, 56),
+    Position = UDim2.fromOffset(28, 8),
+    BorderSizePixel = 0,
+}, Main)
+Bind(Top, "BackgroundColor3", "Bg")
+Top.BackgroundTransparency = 0.03
+do
+    local tint = New("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0 }, Top)
+    Corner(tint, 28)
+    Bind(tint, "BackgroundColor3", "Accent")
+    New("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.86),
+            NumberSequenceKeypoint.new(0.5, 0.95),
+            NumberSequenceKeypoint.new(1, 0.86),
+        }),
+    }, tint)
+end
+Corner(Top, 28)
+do
+    local ts = Stroke(Top, Color3.new(1, 1, 1), 1.5, 0.2)
+    local tg = New("UIGradient", { Rotation = 0 }, ts)
+    OnTheme(function()
+        tg.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Theme.Stroke),
+            ColorSequenceKeypoint.new(0.5, Theme.Accent),
+            ColorSequenceKeypoint.new(1, Theme.Stroke),
+        })
+    end)
+    TweenService:Create(
+        tg,
+        TweenInfo.new(5, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1),
+        { Rotation = 360 }
+    ):Play()
+end
+
+local TopLine = New("Frame", {
+    Size = UDim2.new(1, -24, 0, 1),
+    Position = UDim2.new(0, 12, 1, -1),
+    BorderSizePixel = 0,
+    BackgroundColor3 = Color3.new(1, 1, 1),
+}, Top)
+do
+    local g = AccentGrad(TopLine, 0)
+    g.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.95),
+        NumberSequenceKeypoint.new(0.5, 0.15),
+        NumberSequenceKeypoint.new(1, 0.95),
+    })
+end
+
+Top.ClipsDescendants = true
+local Shine = New("Frame", {
+    Size = UDim2.new(0, 120, 1, 0),
+    Position = UDim2.new(-0.3, 0, 0, 0),
+    BackgroundColor3 = Color3.new(1, 1, 1),
+    BorderSizePixel = 0,
+}, Top)
+New("UIGradient", {
+    Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.5, 0.93),
+        NumberSequenceKeypoint.new(1, 1),
+    }),
+}, Shine)
+TweenService:Create(
+    Shine,
+    TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, false, 4),
+    { Position = UDim2.new(1.1, 0, 0, 0) }
+):Play()
+
+local Badge = New("Frame", {
+    Size = UDim2.fromOffset(34, 34),
+    Position = UDim2.fromOffset(16, 13),
+    BorderSizePixel = 0,
+}, Top)
+Badge.BackgroundColor3 = Color3.new(1, 1, 1)
+AccentGrad(Badge, 45)
+Corner(Badge, 10)
+Bind(Stroke(Badge, Theme.Accent, 1.5, 0.65), "Color", "Accent")
+local BadgeText = Text(Badge, "LS", 13, FNT.B, nil, Enum.TextXAlignment.Center)
+BadgeText.Size = UDim2.fromScale(1, 1)
+Bind(BadgeText, "TextColor3", "OnAccent")
+
+do
+    Badge.ClipsDescendants = true
+    local gl = New("Frame", {
+        Size = UDim2.fromOffset(12, 60),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0, -20, 0.5, 0),
+        Rotation = 25,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 0.55,
+        BorderSizePixel = 0,
+        ZIndex = 5,
+    }, Badge)
+    TweenService:Create(
+        gl,
+        TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, false, 2.5),
+        { Position = UDim2.new(1, 20, 0.5, 0) }
+    ):Play()
+end
+
+local Brand = Text(Top, "", 15, FNT.B, "Text")
+Brand.RichText = true
+OnTheme(function()
+    Brand.Text = 'LRIS <font color="#' .. Theme.Accent:ToHex() .. '">SHOP</font>'
+end)
+Brand.Position = UDim2.fromOffset(60, 10)
+Brand.Size = UDim2.new(1, -270, 0, 22)
+
+local BrandSub = Text(Top, tostring(game.Name or ""), 10, FNT.R, "Muted")
+BrandSub.Position = UDim2.fromOffset(60, 31)
+BrandSub.Size = UDim2.new(1, -270, 0, 16)
+
+local function WindowButton(kind, xOffset, danger)
+    local b = New("TextButton", {
+        Size = UDim2.fromOffset(32, 32),
+        Position = UDim2.new(1, xOffset, 0.5, -16),
+        BorderSizePixel = 0,
+        Text = "",
+        AutoButtonColor = false,
+    }, Top)
+    Corner(b, 10)
+    Bind(b, "BackgroundColor3", "Surface2")
+    local paint = Icon(b, kind, 7, 7)
+    OnTheme(function()
+        paint(Theme.Sub)
+    end)
+    b.MouseEnter:Connect(function()
+        Tween(b, 0.12, { BackgroundColor3 = danger and RGB(200, 70, 80) or Theme.Button })
+        paint(danger and RGB(255, 255, 255) or Theme.Text)
+    end)
+    b.MouseLeave:Connect(function()
+        Tween(b, 0.12, { BackgroundColor3 = Theme.Surface2 })
+        paint(Theme.Sub)
+    end)
+    return b
+end
+
+local MaxBtn = WindowButton("max", -86, false)
+local CloseBtn = WindowButton("close", -48, true)
+CloseBtn.MouseButton1Click:Connect(function()
+    SetWindow(false)
+end)
+
+do
+    local pill = New("Frame", {
+        Size = UDim2.fromOffset(112, 26),
+        Position = UDim2.new(1, -208, 0.5, -13),
+        BorderSizePixel = 0,
+    }, Top)
+    Bind(pill, "BackgroundColor3", "Surface2")
+    Corner(pill, 13)
+    local dot = New("Frame", {
+        Size = UDim2.fromOffset(6, 6),
+        Position = UDim2.fromOffset(11, 10),
+        BorderSizePixel = 0,
+    }, pill)
+    Corner(dot, 3)
+    Bind(dot, "BackgroundColor3", "Accent")
+    TweenService:Create(
+        dot,
+        TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        { BackgroundTransparency = 0.8 }
+    ):Play()
+    local clk = Text(pill, "", 11, FNT.M, "Sub", Enum.TextXAlignment.Left)
+    clk.Position = UDim2.fromOffset(24, 0)
+    clk.Size = UDim2.new(1, -28, 1, 0)
+    local frames, fps = 0, 60
+    Track(RunService.Heartbeat:Connect(function()
+        frames = frames + 1
+    end))
+    task.spawn(function()
+        while Screen.Parent do
+            fps = frames * 2
+            frames = 0
+            clk.Text = os.date("%H:%M:%S") .. "  " .. tostring(fps)
+            task.wait(0.5)
+        end
+    end)
+end
+
+MakeDraggable(Top, Main, "WindowX", "WindowY")
+
+MaxBtn.MouseButton1Click:Connect(function()
+    SetConfig("Maximized", not Config.Maximized)
+    SetConfig("WindowX", 0.5)
+    SetConfig("WindowY", 0.5)
+    Tween(Main, 0.3, { Position = UDim2.fromScale(0.5, 0.5) }, Enum.EasingStyle.Quint)
+    ApplyScale(true)
+end)
+
+
+local Rail = New("Frame", {
+    Size = UDim2.new(0, 64, 1, -84),
+    Position = UDim2.fromOffset(12, 72),
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+    ZIndex = 10,
+}, Main)
+Bind(Rail, "BackgroundColor3", "Bg")
+Rail.BackgroundTransparency = 0.03
+do
+    local tint = New("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0 }, Rail)
+    Corner(tint, 26)
+    Bind(tint, "BackgroundColor3", "Accent")
+    New("UIGradient", {
+        Rotation = 90,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.86),
+            NumberSequenceKeypoint.new(1, 0.95),
+        }),
+    }, tint)
+end
+Corner(Rail, 26)
+Bind(Stroke(Rail, Theme.Stroke, 1, 0.4), "Color", "Stroke")
+
+local CatList = New("ScrollingFrame", {
+    Size = UDim2.new(1, -16, 1, -80),
+    Position = UDim2.fromOffset(8, 10),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 2,
+    ScrollBarImageTransparency = 0.3,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    ElasticBehavior = Enum.ElasticBehavior.Never,
+}, Rail)
+Bind(CatList, "ScrollBarImageColor3", "Accent")
+List(CatList, 4)
+Pad(CatList, 0, 4, 1, 1)
+
+local UserBox = New("Frame", {
+    Size = UDim2.new(1, -16, 0, 52),
+    Position = UDim2.new(0, 8, 1, -60),
+    BorderSizePixel = 0,
+}, Rail)
+Bind(UserBox, "BackgroundColor3", "Surface2")
+Corner(UserBox, 12)
+
+local Avatar = New("ImageLabel", {
+    Size = UDim2.fromOffset(34, 34),
+    Position = UDim2.new(0, 9, 0.5, -17),
+    BorderSizePixel = 0,
+    Image = "rbxthumb://type=AvatarHeadShot&id=" .. LocalPlayer.UserId .. "&w=60&h=60",
+}, UserBox)
+Corner(Avatar, 17)
+Bind(Avatar, "BackgroundColor3", "Button")
+Bind(Stroke(Avatar, Theme.Accent, 1.5, 0.2), "Color", "Accent")
+Bind(Stroke(UserBox, Theme.Stroke, 1, 0.5), "Color", "Stroke")
+local Online = New("Frame", {
+    Size = UDim2.fromOffset(10, 10),
+    Position = UDim2.new(0, 36, 0.5, 7),
+    BorderSizePixel = 0,
+    BackgroundColor3 = RGB(70, 200, 120),
+    ZIndex = 3,
+}, UserBox)
+Corner(Online, 5)
+Bind(Stroke(Online, Theme.Surface2, 2, 0), "Color", "Surface2")
+
+local UName = Text(UserBox, LocalPlayer.DisplayName, 12, FNT.B, "Text")
+UName.Position = UDim2.fromOffset(52, 9)
+UName.Size = UDim2.new(1, -58, 0, 18)
+local UTag = Text(UserBox, "@" .. LocalPlayer.Name, 10, FNT.R, "Muted")
+UTag.Position = UDim2.fromOffset(52, 27)
+UTag.Size = UDim2.new(1, -58, 0, 14)
+
+local Pages = {}
+local TabList = {}
+
+local function CatGroup(name)
+    local l = Text(CatList, name, 10, FNT.B, "Muted")
+    l.Size = UDim2.new(1, 0, 0, 26)
+    l.LayoutOrder = Next(CatList)
+    Pad(l, 10, 0, 6, 0)
+    return l
+end
+
+local CurrentTab = nil
+local function SelectTab(id)
+    if not Pages[id] then
+        id = "Home"
+    end
+    SetConfig("LastTab", id)
+    local changed = id ~= CurrentTab
+    CurrentTab = id
+    for pid, page in pairs(Pages) do
+        page.Visible = (pid == id)
+    end
+    if changed then
+        local p = Pages[id]
+        p.Position = UDim2.fromOffset(0, 16)
+        Tween(p, 0.32, { Position = UDim2.fromOffset(0, 0) }, Enum.EasingStyle.Quint)
+        pcall(function()
+            local n = 0
+            for _, child in ipairs(p:GetChildren()) do
+                local sh = child:FindFirstChild("Sheen")
+                if sh then
+                    n = n + 1
+                    task.delay(n * 0.06, function()
+                        sh.Position = UDim2.new(-0.3, 0, 0, 0)
+                        Tween(sh, 0.7, { Position = UDim2.new(1.1, 0, 0, 0) }, Enum.EasingStyle.Quad)
+                    end)
+                end
+            end
+        end)
+        pcall(function()
+            local sw = New("Frame", {
+                Size = UDim2.new(0, 0, 0, 2),
+                BackgroundColor3 = Theme.Accent,
+                BorderSizePixel = 0,
+                ZIndex = 20,
+            }, p.Parent)
+            Tween(sw, 0.5, { Size = UDim2.new(1, 0, 0, 2), BackgroundTransparency = 1 }, Enum.EasingStyle.Quint)
+            task.delay(0.55, function()
+                sw:Destroy()
+            end)
+        end)
+    end
+    for _, t in ipairs(TabList) do
+        t.active = (t.id == id)
+        t.paint()
+    end
+end
+
+local function Category(name, id, iconKind)
+    local b = New("TextButton", {
+        Size = UDim2.new(1, 0, 0, 42),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Text = "",
+        AutoButtonColor = false,
+        LayoutOrder = Next(CatList),
+    }, CatList)
+    Corner(b, 16)
+    local bst = Stroke(b, Theme.Accent, 1, 1)
+
+    local ind = New("Frame", {
+        Size = UDim2.fromOffset(3, 8),
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 4, 0.5, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+    }, b)
+    Corner(ind, 2)
+
+    local setIcon = Icon(b, iconKind, 16, 12)
+
+    local lbl = Text(b, name, 13, FNT.M)
+    lbl.Position = UDim2.fromOffset(44, 0)
+    lbl.Size = UDim2.new(1, -48, 1, 0)
+    lbl.TextColor3 = Theme.Sub
+
+    local tab = { id = id, active = false, hover = false }
+    function tab.paint()
+        Tween(b, 0.15, {
+            BackgroundColor3 = tab.active and Theme.Accent or Theme.Button,
+            BackgroundTransparency = tab.active and 0 or (tab.hover and 0.5 or 1),
+        })
+        Tween(bst, 0.15, { Color = Theme.Accent, Transparency = tab.active and 0.55 or 1 })
+        Tween(lbl, 0.15, { TextColor3 = tab.active and Theme.OnAccent or Theme.Sub })
+        Tween(ind, 0.15, {
+            BackgroundColor3 = Theme.Accent,
+            BackgroundTransparency = 1,
+            Size = tab.active and UDim2.fromOffset(3, 22) or UDim2.fromOffset(3, 8),
+        })
+        setIcon(tab.active and Theme.OnAccent or Theme.Sub)
+    end
+    TabList[#TabList + 1] = tab
+    OnTheme(tab.paint)
+
+    b.MouseEnter:Connect(function()
+        tab.hover = true
+        tab.paint()
+    end)
+    b.MouseLeave:Connect(function()
+        tab.hover = false
+        tab.paint()
+    end)
+    b.MouseButton1Click:Connect(function()
+        SelectTab(id)
+    end)
+    return b
+end
+
+--==================================================
+-- PAGES
+--==================================================
+
+local Body = New("Frame", {
+    Size = UDim2.new(1, -100, 1, -84),
+    Position = UDim2.fromOffset(88, 72),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+}, Main)
+Bind(Body, "BackgroundColor3", "Bg")
+Corner(Body, 22)
+do
+    local d = Main:FindFirstChild("Deco")
+    local ds = Stroke(d, Color3.new(1, 1, 1), 1.5, 0.1)
+    local dg = New("UIGradient", { Rotation = 0 }, ds)
+    OnTheme(function()
+        local h, sat = Theme.Accent:ToHSV()
+        sat = math.max(sat, 0.6)
+        dg.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Theme.Accent),
+            ColorSequenceKeypoint.new(0.25, Color3.fromHSV((h + 0.1) % 1, sat, 1)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromHSV((h + 0.25) % 1, sat, 1)),
+            ColorSequenceKeypoint.new(0.75, Color3.fromHSV((h + 0.1) % 1, sat, 1)),
+            ColorSequenceKeypoint.new(1, Theme.Accent),
+        })
+    end)
+    TweenService:Create(
+        dg,
+        TweenInfo.new(6, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1),
+        { Rotation = 360 }
+    ):Play()
+end
+New("UIPadding", {
+    PaddingLeft = UDim.new(0, 12),
+    PaddingRight = UDim.new(0, 8),
+    PaddingTop = UDim.new(0, 10),
+    PaddingBottom = UDim.new(0, 8),
+}, Body)
+
+do
+    local expanded = false
+    Track(RunService.RenderStepped:Connect(function()
+        if not Main.Visible then
+            return
+        end
+        local m = UIS:GetMouseLocation()
+        local ap, asz = Rail.AbsolutePosition, Rail.AbsoluteSize
+        local inside = m.X >= ap.X - 4 and m.X <= ap.X + asz.X + 4 and m.Y >= ap.Y and m.Y <= ap.Y + asz.Y
+        if inside ~= expanded then
+            expanded = inside
+            local w = inside and SW or 64
+            Tween(Rail, 0.3, { Size = UDim2.new(0, w, 1, -84) }, Enum.EasingStyle.Quint)
+            Tween(Body, 0.3, {
+                Position = UDim2.fromOffset(w + 24, 72),
+                Size = UDim2.new(1, -(w + 36), 1, -84),
+            }, Enum.EasingStyle.Quint)
+            Tween(Main:FindFirstChild("Deco"), 0.3, {
+                Position = UDim2.fromOffset(w + 24, 72),
+                Size = UDim2.new(1, -(w + 36), 1, -84),
+            }, Enum.EasingStyle.Quint)
+        end
+    end))
+end
+
+local function MakePage(id, title, subtitle)
+    local page = New("ScrollingFrame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        Visible = false,
+    }, Body)
+    Bind(page, "ScrollBarImageColor3", "Stroke")
+    List(page, 8)
+    Pad(page, 0, 8, 0, 14)
+
+    local head = New("Frame", {
+        Size = UDim2.new(1, 0, 0, 60),
+        BackgroundTransparency = 1,
+        LayoutOrder = Next(page),
+    }, page)
+    local t = Text(head, title, 22, FNT.B, "Text")
+    t.Size = UDim2.new(1, 0, 0, 28)
+    do
+        local tgr = New("UIGradient", { Rotation = 0, Offset = Vector2.new(-1, 0) }, t)
+        OnTheme(function()
+            tgr.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+                ColorSequenceKeypoint.new(0.35, Theme.Accent),
+                ColorSequenceKeypoint.new(0.65, Theme.Accent2),
+                ColorSequenceKeypoint.new(1, Color3.new(1, 1, 1)),
+            })
+        end)
+        TweenService:Create(
+            tgr,
+            TweenInfo.new(3.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+            { Offset = Vector2.new(1, 0) }
+        ):Play()
+    end
+    local s = Text(head, subtitle or "", 11, FNT.R, "Muted")
+    s.Position = UDim2.fromOffset(0, 29)
+    s.Size = UDim2.new(1, 0, 0, 18)
+    local hb = New("Frame", {
+        Size = UDim2.fromOffset(36, 3),
+        Position = UDim2.fromOffset(0, 53),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+    }, head)
+    hb.Size = UDim2.new(1, 0, 0, 2)
+    Corner(hb, 1)
+    local hg = AccentGrad(hb, 0)
+    hg.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.35, 0.4),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+
+    Pages[id] = page
+    return page
+end
+
+local Collapsed = {}
+for id in string.gmatch(Config.CollapsedSections, "[^|]+") do
+    Collapsed[id] = true
+end
+local function SaveCollapsed()
+    local t = {}
+    for id, v in pairs(Collapsed) do
+        if v then
+            t[#t + 1] = id
+        end
+    end
+    table.sort(t)
+    SetConfig("CollapsedSections", table.concat(t, "|"))
+end
+
+local SectionsByPage = {}
+local CurrentSection = nil
+
+local function Section(page, title)
+    local hdr = New("TextButton", {
+        Size = UDim2.new(1, 0, 0, 36),
+        BackgroundTransparency = 1,
+        Text = "",
+        AutoButtonColor = false,
+        LayoutOrder = Next(page),
+    }, page)
+
+    local bar = New("Frame", {
+        Size = UDim2.fromOffset(3, 14),
+        Position = UDim2.new(0, 2, 0.5, -7),
+        BorderSizePixel = 0,
+    }, hdr)
+    Corner(bar, 2)
+    bar.BackgroundColor3 = Color3.new(1, 1, 1)
+    AccentGrad(bar, 90)
+
+    local hl = New("Frame", {
+        Size = UDim2.new(1, -4, 0, 1),
+        Position = UDim2.new(0, 2, 1, -1),
+        BorderSizePixel = 0,
+    }, hdr)
+    Bind(hl, "BackgroundColor3", "Stroke")
+    New("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.2),
+            NumberSequenceKeypoint.new(1, 1),
+        }),
+    }, hl)
+
+    local label = Text(hdr, title, 13, FNT.B, "Accent")
+    label.Position = UDim2.fromOffset(14, 0)
+    label.Size = UDim2.new(1, -44, 1, 0)
+
+    local chev = New("Frame", {
+        Size = UDim2.fromOffset(14, 14),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(1, -18, 0.5, 0),
+        BackgroundTransparency = 1,
+    }, hdr)
+    local c1 = New("Frame", {
+        Size = UDim2.fromOffset(8, 2), Position = UDim2.fromOffset(1, 6), Rotation = 45, BorderSizePixel = 0,
+    }, chev)
+    local c2 = New("Frame", {
+        Size = UDim2.fromOffset(8, 2), Position = UDim2.fromOffset(6, 6), Rotation = -45, BorderSizePixel = 0,
+    }, chev)
+    Corner(c1, 1)
+    Corner(c2, 1)
+    OnTheme(function()
+        c1.BackgroundColor3 = Theme.Muted
+        c2.BackgroundColor3 = Theme.Muted
+    end)
+
+    local sec = { label = hdr, items = {}, collapsed = Collapsed[title] == true }
+    function sec.refresh(animate)
+        for _, it in ipairs(sec.items) do
+            it.frame.Visible = it.matched and not sec.collapsed
+        end
+        local rot = sec.collapsed and -90 or 0
+        if animate then
+            Tween(chev, 0.18, { Rotation = rot })
+        else
+            chev.Rotation = rot
+        end
+    end
+    sec.refresh(false)
+
+    hdr.MouseButton1Click:Connect(function()
+        sec.collapsed = not sec.collapsed
+        Collapsed[title] = sec.collapsed
+        SaveCollapsed()
+        sec.refresh(true)
+    end)
+
+    CurrentSection = sec
+    SectionsByPage[page] = SectionsByPage[page] or {}
+    table.insert(SectionsByPage[page], sec)
+    return sec
+end
+
+local function Register(row, search)
+    local sec = CurrentSection
+    if sec then
+        local item = { frame = row, search = string.lower(search or ""), matched = true }
+        table.insert(sec.items, item)
+        sec.refresh(false)
+        return item
+    end
+    return nil
+end
+
+local Refreshers = {}
+
+--==================================================
+-- COMPONENTS: Toggle / Slider / ColorRow
+--==================================================
+
+local FuncToggles = {}
+local UpdateSummary = function() end
+
+local function Toggle(page, opts)
+    local row = Panel(page, UDim2.new(1, 0, 0, 64), "TextButton")
+    HoverRow(row)
+    local searchItem = Register(row, opts.title .. " " .. (opts.desc or ""))
+    local rowStroke = row:FindFirstChildOfClass("UIStroke")
+
+    local tint = New("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+    }, row)
+    Corner(tint, 16)
+    local tg = AccentGrad(tint, 0)
+    tg.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.6, 0.6),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+
+    local title = Text(row, opts.title, 14, FNT.B, "Text")
+    title.Position = UDim2.fromOffset(18, 11)
+    title.Size = UDim2.new(1, -96, 0, 20)
+
+    local desc = Text(row, opts.desc or "", 12, FNT.R, "Sub")
+    desc.Position = UDim2.fromOffset(18, 33)
+    desc.Size = UDim2.new(1, -96, 0, 18)
+
+    local strip = New("Frame", {
+        Size = UDim2.fromOffset(3, 26),
+        Position = UDim2.new(0, 4, 0.5, -13),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 1,
+    }, row)
+    Corner(strip, 2)
+    AccentGrad(strip, 90)
+
+    local glow = New("Frame", {
+        Size = UDim2.fromOffset(62, 40),
+        Position = UDim2.new(1, -71, 0.5, -20),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 1,
+    }, row)
+    Corner(glow, 20)
+    AccentGrad(glow, 0)
+
+    local track = New("Frame", {
+        Size = UDim2.fromOffset(48, 26),
+        Position = UDim2.new(1, -64, 0.5, -13),
+        BorderSizePixel = 0,
+    }, row)
+    Corner(track, 13)
+    local tStroke = Stroke(track, Theme.Stroke, 1, 0.2)
+    Bind(tStroke, "Color", "Stroke")
+
+    local fill = New("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 1,
+    }, track)
+    Corner(fill, 13)
+    AccentGrad(fill, 0)
+
+    local knob = New("Frame", {
+        Size = UDim2.fromOffset(20, 20),
+        Position = UDim2.fromOffset(3, 3),
+        BorderSizePixel = 0,
+    }, track)
+    Corner(knob, 10)
+
+    local state = Config[opts.key] == true
+
+    if page == Pages["KioskFarm"] or page == Pages["AutoSell"] or page == Pages["Teleport"] then
+        FuncToggles[#FuncToggles + 1] = function()
+            return state
+        end
+    end
+
+    local function render(animate)
+        Apply(track, animate, { BackgroundColor3 = Theme.Button })
+        Apply(fill, animate, { BackgroundTransparency = state and 0 or 1 })
+        Apply(glow, animate, { BackgroundTransparency = state and 0.82 or 1 })
+        Apply(tint, animate, { BackgroundTransparency = state and 0.86 or 1 })
+        Apply(knob, animate, {
+            Position = state and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3),
+            BackgroundColor3 = state and Theme.OnAccent or Theme.Sub,
+        })
+        Apply(strip, animate, { BackgroundTransparency = state and 0 or 1 })
+        Apply(tStroke, animate, { Color = state and Theme.Accent or Theme.Stroke })
+        if rowStroke then
+            Apply(rowStroke, animate, {
+                Color = state and Theme.Accent or Theme.Stroke,
+                Transparency = state and 0.55 or 0.4,
+            })
+        end
+        UpdateSummary()
+    end
+    OnTheme(function()
+        render(false)
+    end)
+
+    local function set(v, fire)
+        state = v
+        SetConfig(opts.key, v)
+        render(true)
+        if v and fire then
+            pcall(function()
+                local r = New("Frame", {
+                    Size = UDim2.fromOffset(20, 20),
+                    AnchorPoint = Vector2.new(0.5, 0.5),
+                    Position = UDim2.new(1, -40, 0.5, 0),
+                    BackgroundTransparency = 1,
+                    ZIndex = 6,
+                }, row)
+                Corner(r, 100)
+                local rs = Stroke(r, Theme.Accent, 2, 0.05)
+                Tween(r, 0.6, { Size = UDim2.fromOffset(130, 130) }, Enum.EasingStyle.Quad)
+                Tween(rs, 0.6, { Transparency = 1 }, Enum.EasingStyle.Quad)
+                task.delay(0.65, function()
+                    r:Destroy()
+                end)
+            end)
+        end
+        if fire then
+            PlayToggleSound(v)
+            if opts.callback then
+                task.spawn(opts.callback, v)
+            end
+        end
+    end
+
+    row.MouseButton1Click:Connect(function()
+        set(not state, true)
+    end)
+
+    Refreshers[#Refreshers + 1] = function()
+        state = Config[opts.key] == true
+        render(false)
+        if opts.callback then
+            task.spawn(opts.callback, state)
+        end
+    end
+
+    if opts.callback then
+        task.defer(opts.callback, state)
+    end
+
+    return {
+        Get = function()
+            return state
+        end,
+        Set = function(v)
+            set(v, true)
+        end,
+        Row = row,
+        SearchItem = searchItem,
+    }
+end
+
+local function Slider(page, opts)
+    local min, max, step = opts.min, opts.max, opts.step or 1
+    local row = Panel(page, UDim2.new(1, 0, 0, 78))
+    Register(row, opts.title .. " " .. (opts.desc or ""))
+
+    local title = Text(row, opts.title, 13, FNT.M, "Text")
+    title.Position = UDim2.fromOffset(16, 10)
+    title.Size = UDim2.new(1, -110, 0, 20)
+
+    local desc = Text(row, opts.desc or "", 12, FNT.R, "Sub")
+    desc.Position = UDim2.fromOffset(16, 31)
+    desc.Size = UDim2.new(1, -110, 0, 16)
+
+    local pill = New("Frame", {
+        Size = UDim2.fromOffset(82, 22),
+        Position = UDim2.new(1, -98, 0, 9),
+        BorderSizePixel = 0,
+    }, row)
+    Corner(pill, 11)
+    Bind(pill, "BackgroundColor3", "Surface2")
+    Bind(Stroke(pill, Theme.Accent, 1, 0.6), "Color", "Accent")
+    local val = New("TextBox", {
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Text = "",
+        TextSize = 12,
+        Font = FNT.B,
+        ClearTextOnFocus = false,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        Position = UDim2.new(1, -98, 0, 9),
+        Size = UDim2.fromOffset(82, 22),
+    }, row)
+    Bind(val, "TextColor3", "Accent")
+
+    local bar = New("Frame", {
+        Size = UDim2.new(1, -32, 0, 6),
+        Position = UDim2.fromOffset(16, 60),
+        BorderSizePixel = 0,
+    }, row)
+    Corner(bar, 3)
+    Bind(bar, "BackgroundColor3", "Button")
+
+    local fill = New("Frame", {
+        Size = UDim2.fromScale(0, 1),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+    }, bar)
+    Corner(fill, 3)
+    AccentGrad(fill, 0)
+
+    local knob = New("Frame", {
+        Size = UDim2.fromOffset(16, 16),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0, 0.5),
+        BorderSizePixel = 0,
+    }, bar)
+    Corner(knob, 8)
+    Bind(knob, "BackgroundColor3", "Text")
+    Bind(Stroke(knob, Theme.Accent, 3, 0), "Color", "Accent")
+
+    local hit = New("TextButton", {
+        Size = UDim2.new(1, -32, 0, 30),
+        Position = UDim2.fromOffset(16, 48),
+        BackgroundTransparency = 1,
+        Text = "",
+        AutoButtonColor = false,
+    }, row)
+
+    local value = Config[opts.key]
+
+    local function show()
+        local a = (value - min) / (max - min)
+        fill.Size = UDim2.fromScale(a, 1)
+        knob.Position = UDim2.fromScale(a, 0.5)
+        val.Text = string.format("%g", value) .. (opts.suffix or "")
+    end
+
+    local function setValue(v, fire)
+        v = math.floor(math.clamp(math.floor((v - min) / step + 0.5) * step + min, min, max) * 10000 + 0.5) / 10000
+        if v == value and fire then
+            return
+        end
+        value = v
+        show()
+        if fire then
+            SetConfig(opts.key, v)
+            if opts.callback then
+                task.spawn(opts.callback, v)
+            end
+        end
+    end
+
+    -- the value box is typeable: click it, type a number, press Enter
+    val.Focused:Connect(function()
+        val.Text = string.format("%g", value)
+    end)
+    val.FocusLost:Connect(function()
+        local cleaned = (string.gsub(val.Text, ",", "."))
+        local n = tonumber(string.match(cleaned, "%-?%d*%.?%d+"))
+        if n then
+            setValue(n, true)
+        end
+        show()
+    end)
+
+    local dragging = false
+    local function fromX(x)
+        local a = math.clamp((x - bar.AbsolutePosition.X) / math.max(1, bar.AbsoluteSize.X), 0, 1)
+        setValue(min + (max - min) * a, true)
+    end
+
+    hit.InputBegan:Connect(function(input)
+        if IsPointer(input) then
+            dragging = true
+            page.ScrollingEnabled = false
+            Tween(knob, 0.12, { Size = UDim2.fromOffset(21, 21) })
+            fromX(input.Position.X)
+        end
+    end)
+    Track(UIS.InputChanged:Connect(function(input)
+        if dragging and IsMove(input) then
+            fromX(input.Position.X)
+        end
+    end))
+    Track(UIS.InputEnded:Connect(function(input)
+        if dragging and IsPointer(input) then
+            dragging = false
+            page.ScrollingEnabled = true
+            Tween(knob, 0.12, { Size = UDim2.fromOffset(16, 16) })
+        end
+    end))
+
+    value = math.clamp(value, min, max)
+    show()
+
+    Refreshers[#Refreshers + 1] = function()
+        value = math.clamp(Config[opts.key], min, max)
+        show()
+        if opts.callback then
+            task.spawn(opts.callback, value)
+        end
+    end
+
+    if opts.callback then
+        task.defer(opts.callback, value)
+    end
+end
+
+-- ============================================================
+-- ============================================================
+local PaletteColors = {
+    "FFFFFF", "BEBEBE", "6B6B76", "2A2A33", "0E0E14", "000000", "8B5CF6", "6366F1",
+    "3B82F6", "22D3EE", "10B981", "84CC16", "FACC15", "FB923C", "EF4444", "EC4899",
+}
+
+local ActiveOverlay, ActivePopup
+local PaletteConns = {}
+
+local function ClosePalette()
+    for _, c in ipairs(PaletteConns) do
+        pcall(function()
+            c:Disconnect()
+        end)
+    end
+    PaletteConns = {}
+    if ActiveOverlay then
+        ActiveOverlay:Destroy()
+        ActiveOverlay = nil
+    end
+    if ActivePopup then
+        ActivePopup:Destroy()
+        ActivePopup = nil
+    end
+end
+
+local themePending = false
+local function QueueTheme()
+    if themePending then
+        return
+    end
+    themePending = true
+    task.defer(function()
+        themePending = false
+        ApplyTheme()
+    end)
+end
+
+local function OpenPalette(title, key, onPick)
+    ClosePalette()
+
+    ActiveOverlay = New("TextButton", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Text = "",
+        AutoButtonColor = false,
+        ZIndex = 150,
+    }, Screen)
+    Tween(ActiveOverlay, 0.2, { BackgroundTransparency = 0.45 })
+    ActiveOverlay.MouseButton1Click:Connect(ClosePalette)
+
+    local PW, PH = 240, 304
+    local pop = New("CanvasGroup", {
+        Size = UDim2.fromOffset(PW, PH),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundColor3 = Theme.Surface,
+        BorderSizePixel = 0,
+        GroupTransparency = 1,
+        ZIndex = 160,
+        Active = true,
+    }, Screen)
+    Corner(pop, 16)
+    Stroke(pop, Theme.Accent, 1.5, 0.35)
+    local vs = ViewSize()
+    New("UIScale", { Scale = math.clamp((vs.Y - 24) / PH, 0.5, 1) }, pop)
+    ActivePopup = pop
+    Tween(pop, 0.2, { GroupTransparency = 0 })
+
+    local okc, c0 = pcall(Color3.fromHex, Config[key])
+    if not okc then
+        c0 = Color3.new(1, 1, 1)
+    end
+    local H, S, V = c0:ToHSV()
+
+    local ttl = Text(pop, title or "Pick color", 13, FNT.B, Theme.Text)
+    ttl.Position = UDim2.fromOffset(14, 10)
+    ttl.Size = UDim2.new(1, -130, 0, 20)
+
+    local prev = New("Frame", {
+        Size = UDim2.fromOffset(36, 18),
+        Position = UDim2.fromOffset(PW - 82, 11),
+        BorderSizePixel = 0,
+    }, pop)
+    Corner(prev, 6)
+    Stroke(prev, Color3.new(1, 1, 1), 1, 0.75)
+
+    local closeB = New("TextButton", {
+        Size = UDim2.fromOffset(24, 24),
+        Position = UDim2.fromOffset(PW - 38, 8),
+        BackgroundColor3 = Theme.Surface2,
+        BorderSizePixel = 0,
+        Text = "×",
+        TextSize = 18,
+        Font = FNT.B,
+        TextColor3 = Theme.Sub,
+        AutoButtonColor = false,
+    }, pop)
+    Corner(closeB, 8)
+    closeB.MouseButton1Click:Connect(ClosePalette)
+
+    local sv = New("Frame", {
+        Size = UDim2.fromOffset(PW - 28, 124),
+        Position = UDim2.fromOffset(14, 40),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.fromHSV(H, 1, 1),
+    }, pop)
+    Corner(sv, 10)
+    local wf = New("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+    }, sv)
+    Corner(wf, 10)
+    New("UIGradient", { Transparency = NumberSequence.new(0, 1) }, wf)
+    local bf = New("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(0, 0, 0),
+    }, sv)
+    Corner(bf, 10)
+    New("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(1, 0) }, bf)
+    local svCur = New("Frame", {
+        Size = UDim2.fromOffset(16, 16),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+    }, sv)
+    Corner(svCur, 8)
+    Stroke(svCur, Color3.new(1, 1, 1), 2.5, 0)
+    local svHit = New("TextButton", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Text = "",
+        AutoButtonColor = false,
+    }, sv)
+
+    local hue = New("Frame", {
+        Size = UDim2.fromOffset(PW - 28, 14),
+        Position = UDim2.fromOffset(14, 176),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+    }, pop)
+    Corner(hue, 7)
+    New("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+            ColorSequenceKeypoint.new(1 / 6, Color3.fromRGB(255, 255, 0)),
+            ColorSequenceKeypoint.new(2 / 6, Color3.fromRGB(0, 255, 0)),
+            ColorSequenceKeypoint.new(3 / 6, Color3.fromRGB(0, 255, 255)),
+            ColorSequenceKeypoint.new(4 / 6, Color3.fromRGB(0, 0, 255)),
+            ColorSequenceKeypoint.new(5 / 6, Color3.fromRGB(255, 0, 255)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0)),
+        }),
+    }, hue)
+    local hueCur = New("Frame", {
+        Size = UDim2.fromOffset(18, 18),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BorderSizePixel = 0,
+    }, hue)
+    Corner(hueCur, 9)
+    Stroke(hueCur, Color3.new(1, 1, 1), 2.5, 0)
+    local hueHit = New("TextButton", {
+        Size = UDim2.new(1, 0, 1, 12),
+        Position = UDim2.fromOffset(0, -6),
+        BackgroundTransparency = 1,
+        Text = "",
+        AutoButtonColor = false,
+    }, hue)
+
+    local box = New("TextBox", {
+        Size = UDim2.fromOffset(PW - 28, 30),
+        Position = UDim2.fromOffset(14, 202),
+        BackgroundColor3 = Theme.Surface2,
+        BorderSizePixel = 0,
+        Text = "",
+        PlaceholderText = "#RRGGBB",
+        ClearTextOnFocus = false,
+        TextSize = 12,
+        Font = FNT.M,
+        TextColor3 = Theme.Text,
+        PlaceholderColor3 = Theme.Muted,
+    }, pop)
+    Corner(box, 9)
+    Stroke(box, Theme.Stroke, 1, 0.3)
+
+    local function render(fromBox)
+        local c = Color3.fromHSV(H, S, V)
+        sv.BackgroundColor3 = Color3.fromHSV(H, 1, 1)
+        svCur.Position = UDim2.fromScale(S, 1 - V)
+        hueCur.Position = UDim2.fromScale(H, 0.5)
+        hueCur.BackgroundColor3 = Color3.fromHSV(H, 1, 1)
+        prev.BackgroundColor3 = c
+        if not fromBox then
+            box.Text = "#" .. string.upper(c:ToHex())
+        end
+        return c
+    end
+    local function commit(fromBox)
+        onPick(render(fromBox))
+    end
+    render(false)
+
+    local function bindDrag(hit, onMove)
+        local dragging, dInput = false, nil
+        local off = Vector2.zero
+        hit.InputBegan:Connect(function(input)
+            if not IsPointer(input) then
+                return
+            end
+            local p = Vector2.new(input.Position.X, input.Position.Y)
+            local a, sz = hit.AbsolutePosition, hit.AbsoluteSize
+            local inset = GuiService:GetGuiInset()
+            local q = p + inset
+            local inside = q.X >= a.X and q.X <= a.X + sz.X and q.Y >= a.Y and q.Y <= a.Y + sz.Y
+            off = inside and inset or Vector2.zero
+            dragging = true
+            dInput = input
+            onMove(p + off)
+        end)
+        PaletteConns[#PaletteConns + 1] = UIS.InputChanged:Connect(function(input)
+            if dragging and IsMove(input) then
+                if input.UserInputType == Enum.UserInputType.Touch and input ~= dInput then
+                    return
+                end
+                onMove(Vector2.new(input.Position.X, input.Position.Y) + off)
+            end
+        end)
+        PaletteConns[#PaletteConns + 1] = UIS.InputEnded:Connect(function(input)
+            if dragging and IsPointer(input) then
+                if input.UserInputType == Enum.UserInputType.Touch and input ~= dInput then
+                    return
+                end
+                dragging = false
+            end
+        end)
+    end
+
+    bindDrag(svHit, function(pos)
+        S = math.clamp((pos.X - sv.AbsolutePosition.X) / math.max(1, sv.AbsoluteSize.X), 0, 1)
+        V = 1 - math.clamp((pos.Y - sv.AbsolutePosition.Y) / math.max(1, sv.AbsoluteSize.Y), 0, 1)
+        commit(false)
+    end)
+    bindDrag(hueHit, function(pos)
+        H = math.clamp((pos.X - hue.AbsolutePosition.X) / math.max(1, hue.AbsoluteSize.X), 0, 1)
+        commit(false)
+    end)
+
+    box.FocusLost:Connect(function()
+        local h = string.match(box.Text, "^%s*#?(%x%x%x%x%x%x)%s*$")
+        if h then
+            H, S, V = Color3.fromHex(h):ToHSV()
+            commit(false)
+        else
+            box.TextColor3 = RGB(235, 75, 90)
+            task.delay(0.8, function()
+                if box.Parent then
+                    box.TextColor3 = Theme.Text
+                    render(false)
+                end
+            end)
+        end
+    end)
+
+    for i, hexv in ipairs(PaletteColors) do
+        local c = Color3.fromHex(hexv)
+        local sw = New("TextButton", {
+            Size = UDim2.fromOffset(22, 22),
+            Position = UDim2.fromOffset(14 + ((i - 1) % 8) * 27, 244 + math.floor((i - 1) / 8) * 28),
+            BackgroundColor3 = c,
+            BorderSizePixel = 0,
+            Text = "",
+            AutoButtonColor = false,
+        }, pop)
+        Corner(sw, 11)
+        Stroke(sw, Color3.new(1, 1, 1), 1, 0.8)
+        sw.MouseButton1Click:Connect(function()
+            H, S, V = c:ToHSV()
+            commit(false)
+        end)
+    end
+end
+
+local ColorRefreshers = {}
+
+local function ColorRow(page, title, key)
+    local row = Panel(page, UDim2.new(1, 0, 0, 50), "TextButton")
+    HoverRow(row)
+    Register(row, title)
+
+    local t = Text(row, title, 12, FNT.M, "Text")
+    t.Position = UDim2.fromOffset(18, 0)
+    t.Size = UDim2.new(1, -176, 1, 0)
+
+    local hexLabel = Text(row, "", 10, FNT.M, "Muted", Enum.TextXAlignment.Right)
+    hexLabel.Position = UDim2.new(1, -152, 0, 0)
+    hexLabel.Size = UDim2.fromOffset(84, 50)
+
+    local swatch = New("Frame", {
+        Size = UDim2.fromOffset(44, 24),
+        Position = UDim2.new(1, -60, 0.5, -12),
+        BorderSizePixel = 0,
+    }, row)
+    Corner(swatch, 8)
+    Stroke(swatch, Color3.new(1, 1, 1), 1, 0.7)
+
+    local function refresh()
+        swatch.BackgroundColor3 = Hex(key, RGB(100, 100, 100))
+        hexLabel.Text = string.upper(tostring(Config[key]))
+    end
+    refresh()
+    Refreshers[#Refreshers + 1] = refresh
+    ColorRefreshers[#ColorRefreshers + 1] = refresh
+
+    row.MouseButton1Click:Connect(function()
+        OpenPalette(title, key, function(c)
+            SetConfig(key, "#" .. string.upper(c:ToHex()))
+            refresh()
+            QueueTheme()
+        end)
+    end)
+end
+
+local ThemePresets = {
+    { "Graphite", "#C9CBD3", "#0A0A0C", "#232328" },
+    { "Violet", "#8B5CF6", "#09090D", "#1C1C26" },
+    { "Crimson", "#F43F5E", "#0B0708", "#26151A" },
+    { "Cyber", "#22D3EE", "#06090C", "#122029" },
+    { "Toxic", "#4ADE80", "#060A07", "#13211A" },
+    { "Sunset", "#FB923C", "#0C0805", "#271A10" },
+    { "Neon Violet", "#A78BFA", "#08080F", "#1E1B33" },
+    { "Sakura", "#F9A8D4", "#0D0709", "#2A1620" },
+    { "Ocean", "#38BDF8", "#050A10", "#102235" },
+    { "Gold", "#FACC15", "#0B0A05", "#2A2410" },
+    { "Aurora", "#2DD4BF", "#050B0B", "#102A2A" },
+    { "Royal", "#6366F1", "#07071A", "#1A1C3D" },
+    { "Matrix", "#00FF88", "#030A06", "#0C2418" },
+    { "Blood Moon", "#EF4444", "#0A0404", "#2A1010" },
+    { "Ice", "#BAE6FD", "#070B10", "#14202C" },
+    { "Lavender", "#C4B5FD", "#0A0910", "#221E36" },
+    { "Mint", "#6EE7B7", "#050B09", "#12281F" },
+    { "Rose Gold", "#FDA4AF", "#0C0809", "#2C1A1D" },
+}
+
+local function ThemeGrid(page)
+    local holder = New("Frame", {
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        LayoutOrder = Next(page),
+    }, page)
+    New("UIGridLayout", {
+        CellSize = UDim2.new(1 / 3, -7, 0, 56),
+        CellPadding = UDim2.fromOffset(10, 10),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, holder)
+    Register(holder, "theme preset")
+
+    for _, p in ipairs(ThemePresets) do
+        local card = Panel(holder, nil, "TextButton")
+        HoverRow(card)
+
+        local function dot(hex, x)
+            local d = New("Frame", {
+                Size = UDim2.fromOffset(22, 22),
+                AnchorPoint = Vector2.new(0, 0.5),
+                Position = UDim2.new(0, x, 0.5, 0),
+                BorderSizePixel = 0,
+                BackgroundColor3 = Color3.fromHex(hex),
+            }, card)
+            Corner(d, 11)
+            Stroke(d, Color3.new(1, 1, 1), 1, 0.8)
+        end
+        dot(p[3], 12)
+        dot(p[4], 24)
+        dot(p[2], 36)
+
+        local n = Text(card, p[1], 12, FNT.M, "Text")
+        n.Position = UDim2.fromOffset(68, 0)
+        n.Size = UDim2.new(1, -74, 1, 0)
+
+        card.MouseButton1Click:Connect(function()
+            SetConfig("UIAccentColor", p[2])
+            SetConfig("UIBackgroundColor", p[3])
+            SetConfig("UIButtonColor", p[4])
+            SetConfig("FloatingButtonColor", p[3])
+            SetConfig("FloatingBorderColor", p[2])
+            SetConfig("FloatingGlowColor", p[2])
+            for _, fn in ipairs(ColorRefreshers) do
+                pcall(fn)
+            end
+            QueueTheme()
+            Toast("Theme: " .. p[1])
+        end)
+    end
+end
+
+--==================================================
+-- HOME
+--==================================================
+
+local RefreshHome
+
+do
+local Home = MakePage("Home", "Home", "Overview and server info")
+
+local Hero = Panel(Home, UDim2.new(1, 0, 0, 84))
+Tint(Hero)
+local HeroSub = Text(Hero, "", 11, FNT.M, "Muted")
+HeroSub.Position = UDim2.fromOffset(20, 14)
+HeroSub.Size = UDim2.new(0.6, 0, 0, 16)
+local HeroName = Text(Hero, LocalPlayer.DisplayName, 24, FNT.B, Color3.new(1, 1, 1))
+HeroName.Position = UDim2.fromOffset(20, 32)
+HeroName.Size = UDim2.new(0.6, 0, 0, 38)
+AccentGrad(HeroName, 0)
+local HeroClock = Text(Hero, "", 26, FNT.B, "Text", Enum.TextXAlignment.Right)
+HeroClock.Position = UDim2.new(0.5, 0, 0, 16)
+HeroClock.Size = UDim2.new(0.5, -20, 0, 34)
+local HeroDate = Text(Hero, "", 10, FNT.M, "Muted", Enum.TextXAlignment.Right)
+HeroDate.Position = UDim2.new(0.5, 0, 0, 52)
+HeroDate.Size = UDim2.new(0.5, -20, 0, 16)
+
+local MapImage = "rbxthumb://type=GameIcon&id=" .. tostring(game.GameId) .. "&w=150&h=150"
+
+local MapCard = Panel(Home, UDim2.new(1, 0, 0, 116))
+MapCard.ClipsDescendants = true
+
+local MapBG = New("ImageLabel", {
+    Size = UDim2.fromScale(1, 1),
+    BackgroundTransparency = 1,
+    Image = MapImage,
+    ScaleType = Enum.ScaleType.Crop,
+    ImageTransparency = 0.86,
+}, MapCard)
+Corner(MapBG, 12)
+
+local MapFade = New("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0 }, MapCard)
+Bind(MapFade, "BackgroundColor3", "Surface")
+New("UIGradient", {
+    Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.1),
+        NumberSequenceKeypoint.new(1, 0.7),
+    }),
+}, MapFade)
+Corner(MapFade, 12)
+Tint(MapCard)
+
+local MapIcon = New("ImageLabel", {
+    Size = UDim2.fromOffset(84, 84),
+    Position = UDim2.fromOffset(16, 16),
+    BorderSizePixel = 0,
+    Image = MapImage,
+    ScaleType = Enum.ScaleType.Crop,
+}, MapCard)
+Corner(MapIcon, 16)
+Bind(MapIcon, "BackgroundColor3", "Button")
+Bind(Stroke(MapIcon, Theme.Stroke, 1.5, 0.1), "Color", "Stroke")
+
+local MapName = Text(MapCard, tostring(game.Name or "Unknown"), 17, FNT.B, "Text")
+MapName.Position = UDim2.fromOffset(112, 16)
+MapName.Size = UDim2.new(1, -128, 0, 26)
+
+local MapBy = Text(MapCard, "Loading map info...", 11, FNT.R, "Muted")
+MapBy.Position = UDim2.fromOffset(112, 43)
+MapBy.Size = UDim2.new(1, -128, 0, 16)
+
+local Chips = New("Frame", {
+    Size = UDim2.new(1, -128, 0, 24),
+    Position = UDim2.fromOffset(112, 72),
+    BackgroundTransparency = 1,
+}, MapCard)
+New("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding = UDim.new(0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, Chips)
+
+local function Chip(text)
+    local c = New("TextLabel", {
+        Size = UDim2.fromOffset(0, 24),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BorderSizePixel = 0,
+        Text = text,
+        TextSize = 10,
+        Font = FNT.M,
+        LayoutOrder = Next(Chips),
+    }, Chips)
+    Bind(c, "BackgroundColor3", "Surface2")
+    Bind(c, "TextColor3", "Sub")
+    Corner(c, 12)
+    Pad(c, 10, 10, 0, 0)
+    return c
+end
+
+local ChipPlace = Chip("ID " .. tostring(game.PlaceId))
+local ChipPlayers = Chip("Players -/-")
+
+task.spawn(function()
+    pcall(function()
+        local info = MarketplaceService:GetProductInfo(game.PlaceId)
+        if info then
+            if info.Name and info.Name ~= "" then
+                MapName.Text = tostring(info.Name)
+                BrandSub.Text = tostring(info.Name)
+            end
+            if info.Creator and info.Creator.Name then
+                MapBy.Text = "By " .. tostring(info.Creator.Name)
+            else
+                MapBy.Text = ""
+            end
+        end
+    end)
+end)
+
+local function Stat(parent, label, size)
+    local c = Panel(parent, size)
+    local bar = New("Frame", {
+        Size = UDim2.fromOffset(3, 18),
+        Position = UDim2.fromOffset(0, 12),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+    }, c)
+    Corner(bar, 2)
+    AccentGrad(bar, 90)
+    local l = Text(c, label, 10, FNT.M, "Muted")
+    l.Position = UDim2.fromOffset(16, 11)
+    l.Size = UDim2.new(1, -30, 0, 14)
+    local v = Text(c, "-", 14, FNT.B, "Text")
+    v.Position = UDim2.fromOffset(16, 30)
+    v.Size = UDim2.new(1, -30, 0, 22)
+    return v
+end
+
+local Grid = New("Frame", {
+    Size = UDim2.new(1, 0, 0, 0),
+    AutomaticSize = Enum.AutomaticSize.Y,
+    BackgroundTransparency = 1,
+    LayoutOrder = Next(Home),
+}, Home)
+New("UIGridLayout", {
+    CellSize = UDim2.new(0.5, -5, 0, 64),
+    CellPadding = UDim2.fromOffset(10, 10),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, Grid)
+
+local StatPlayer = Stat(Grid, "Players")
+local StatTime = Stat(Grid, "Server time")
+local StatFps = Stat(Grid, "FPS")
+local StatPing = Stat(Grid, "Ping")
+
+local PerfCard = Panel(Home, UDim2.new(1, 0, 0, 120))
+Tint(PerfCard)
+local PerfTitle = Text(PerfCard, "Performance (FPS)", 12, FNT.B, "Text")
+PerfTitle.Position = UDim2.fromOffset(18, 12)
+PerfTitle.Size = UDim2.new(0.5, 0, 0, 18)
+local PerfAvg = Text(PerfCard, "", 11, FNT.M, "Sub", Enum.TextXAlignment.Right)
+PerfAvg.Position = UDim2.new(0.5, 0, 0, 12)
+PerfAvg.Size = UDim2.new(0.5, -18, 0, 18)
+local PerfBars = New("Frame", {
+    Size = UDim2.new(1, -36, 0, 68),
+    Position = UDim2.fromOffset(18, 40),
+    BackgroundTransparency = 1,
+}, PerfCard)
+
+local PERF_N = 36
+local PerfBar, PerfHist = {}, {}
+for i = 1, PERF_N do
+    local b = New("Frame", {
+        Size = UDim2.new(1 / PERF_N, -2, 0, 2),
+        AnchorPoint = Vector2.new(0, 1),
+        Position = UDim2.new((i - 1) / PERF_N, 1, 1, 0),
+        BorderSizePixel = 0,
+        BackgroundTransparency = 1,
+    }, PerfBars)
+    Corner(b, 2)
+    PerfBar[i] = b
+    PerfHist[i] = 0
+end
+
+local function PerfUpdate()
+    table.remove(PerfHist, 1)
+    PerfHist[#PerfHist + 1] = Metrics.fps
+    local peak, sum, cnt = 60, 0, 0
+    for _, v in ipairs(PerfHist) do
+        if v > peak then
+            peak = v
+        end
+        if v > 0 then
+            sum = sum + v
+            cnt = cnt + 1
+        end
+    end
+    for i, v in ipairs(PerfHist) do
+        local b = PerfBar[i]
+        b.Size = UDim2.new(1 / PERF_N, -2, math.clamp(v / peak, 0.04, 1), 0)
+        b.BackgroundColor3 = Level(v, 50, 30, true)
+        b.BackgroundTransparency = v == 0 and 1 or 0.08
+    end
+    PerfAvg.Text = "Avg " .. tostring(cnt > 0 and math.floor(sum / cnt + 0.5) or 0) .. " FPS"
+end
+
+local sessionStart = os.time()
+
+function RefreshHome()
+    local hr = tonumber(os.date("%H")) or 12
+    HeroSub.Text = (hr >= 5 and hr < 12 and "Good morning")
+        or (hr >= 12 and hr < 17 and "Good afternoon")
+        or (hr >= 17 and hr < 21 and "Good evening")
+        or "Good night"
+    HeroClock.Text = os.date("%H:%M")
+    HeroDate.Text = os.date("%d / %m / %Y")
+    local sec = math.max(0, os.time() - sessionStart)
+    StatPlayer.Text = LocalPlayer.DisplayName
+    StatTime.Text = string.format("%02d:%02d:%02d", math.floor(sec / 3600), math.floor((sec % 3600) / 60), sec % 60)
+    StatFps.Text = tostring(Metrics.fps)
+    StatFps.TextColor3 = Level(Metrics.fps, 50, 30, true)
+    StatPing.Text = tostring(Metrics.ping) .. " ms"
+    StatPing.TextColor3 = Level(Metrics.ping, 80, 160, false)
+    ChipPlayers.Text = string.format("Players %d/%d", #Players:GetPlayers(), Players.MaxPlayers)
+    PerfUpdate()
+end
+
+task.spawn(function()
+    while Screen.Parent do
+        RefreshStats()
+        RefreshHome()
+        task.wait(0.5)
+    end
+end)
+end
+
+--==================================================
+-- FUNCTIONS
+--==================================================
+
+--==================================================
+-- HITBOX PAGE
+--==================================================
+
+
+--==================================================
+-- PAGE 1: KIOSK AUTO FARM (ระบบกดตู้ออโต้ฟาม)
+--==================================================
+local KioskFarmPage = MakePage("KioskFarm", "Kiosk Farm", "ระบบสั่งวาปไปกดตู้เริ่ม AutoFarm ของเกมอัตโนมัติ (Kiosk Auto Farm)")
+
+Section(KioskFarmPage, "Master Farm Controls (สวิตช์หลัก)")
+
+Toggle(KioskFarmPage, {
+    key = "KioskFarmEnabled",
+    title = "Master Kiosk Farm (เปิด/ปิด ฟาร์มตู้)",
+    desc = "วาปไปที่ตู้ฟาร์มของเกม กดเริ่มฟาร์มอัตโนมัติ และวนลูปเมื่อของเต็มหรือตู้หยุด",
+    callback = function(v)
+        if not v then
+            stopTween()
+        end
+        Toast(v and "🚀 เริ่มต้นระบบฟาร์มตู้อัตโนมัติแล้ว!" or "⏸️ หยุดระบบฟาร์มตู้แล้ว", v)
+    end,
+})
+
+Section(KioskFarmPage, "Farm Position (ตำแหน่งตอนฟาม)")
+
+Toggle(KioskFarmPage, {
+    key = "UseTween",
+    title = "โหมดเคลื่อนที่: ทวีนใต้ดิน (เปิด) / วาป (ปิด)",
+    desc = "เปิด = ทวีนมุดใต้ดินไปที่ตู้/จุดขโมย/ร้าน/จุดแปรรูป | ปิด = วาปทันที",
+})
+
+Toggle(KioskFarmPage, {
+    key = "FarmUnderground",
+    title = "ฟามอยู่ใต้ดิน (Underground)",
+    desc = "เปิด = ตอนตู้ทำงานหรือตอนเก็บ Loop (Hydrant/Lights/Crystal) ตัวละครจะอยู่ใต้ดินใต้จุดนั้น | ปิด = ยืนบนดิน",
+})
+
+Toggle(KioskFarmPage, {
+    key = "SkipOccupied",
+    title = "ข้ามจุดที่มีคนอยู่ (Loop / เคาะประตู)",
+    desc = "ถ้ามีผู้เล่นคนอื่นยืนอยู่ที่จุดเก็บ Loop หรือประตูอยู่แล้ว (ในระยะ 12 studs) หรือเสียงเคาะประตูกำลังดัง จะข้ามไปจุดอื่นไม่เสียเวลารอ",
+})
+
+Slider(KioskFarmPage, {
+    key = "DoorCooldown",
+    title = "Halloween: พักประตูหลังเคาะ (วินาที)",
+    desc = "เคาะประตูเดิมซ้ำได้อีกครั้งหลังผ่านไปกี่วินาที",
+    min = 5, max = 300, step = 5, suffix = " วิ",
+})
+
+Slider(KioskFarmPage, {
+    key = "JobDelay",
+    title = "Black Jobs: เวลาหน่วงหลังเก็บ (วินาที)",
+    desc = "รอกี่วินาทีหลังขโมยเสร็จก่อนไปจุดถัดไป",
+    min = 0.1, max = 20, step = 0.1, suffix = " วิ",
+})
+
+Slider(KioskFarmPage, {
+    key = "JobRoundAmount",
+    title = "Black Jobs: ชิ้นต่อรอบ (ปูน/สายไฟ)",
+    desc = "เก็บปูนหรือสายไฟให้ครบกี่ชิ้นก่อนไปฟามอย่างถัดไปในลำดับ",
+    min = 1, max = 100, step = 1, suffix = " ชิ้น",
+})
+
+Slider(KioskFarmPage, {
+    key = "TweenSpeed",
+    title = "Tween Speed (ความเร็วทวีนใต้ดิน)",
+    desc = "ความเร็วตอนมุดใต้ดินไปตู้ (studs ต่อวินาที) ยิ่งสูงยิ่งถึงเร็ว",
+    min = 50, max = 3000, step = 10, suffix = " studs/s",
+})
+
+Slider(KioskFarmPage, {
+    key = "UndergroundDepth",
+    title = "Underground Depth (ความลึกใต้ดิน)",
+    desc = "ลงไปใต้ตู้กี่ studs ตอนเปิดโหมดฟามใต้ดิน",
+    min = 5, max = 40, step = 1, suffix = " studs",
+})
+
+Section(KioskFarmPage, "Select Kiosks (เลือกฟามได้หลายตู้ - ฟามเรียงตามลำดับ เต็มแล้วไปตู้ถัดไป)")
+
+local TargetFilterHolder = New("Frame", {
+    Size = UDim2.new(1, 0, 0, 0),
+    AutomaticSize = Enum.AutomaticSize.Y,
+    BackgroundTransparency = 1,
+    LayoutOrder = Next(KioskFarmPage),
+}, KioskFarmPage)
+New("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Wraps = true,
+    Padding = UDim.new(0, 10),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, TargetFilterHolder)
+
+local TargetButtons = {}
+local TargetsList = {
+    { id = "Carrot", label = "1 🥕 Carrot" },
+    { id = "Chompoo", label = "2 🍏 Chompoo" },
+    { id = "Wood", label = "3 🪵 Wood" },
+    { id = "Avocado", label = "4 🥑 Avocado" },
+    { id = "Apple", label = "5 🍎 Apple" },
+    { id = "Rock", label = "6 🪨 Rock" },
+    { id = "Cement", label = "7 🧱 ปูน (Cement)" },
+    { id = "Wire", label = "8 🔌 สายไฟ (Wire)" },
+    { id = "Hydrant", label = "9 🚰 Loop Hydrant" },
+    { id = "Light", label = "10 💡 Loop Lights" },
+    { id = "Crystal", label = "11 💎 Loop Crystal" },
+    { id = "Halloween", label = "12 🎃 Halloween (เคาะประตู)" },
+}
+
+for _, t in ipairs(TargetsList) do
+    local b = New("TextButton", {
+        Size = UDim2.fromOffset(0, 34),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+        LayoutOrder = Next(TargetFilterHolder),
+    }, TargetFilterHolder)
+    Corner(b, 10)
+    Pad(b, 16, 16, 0, 0)
+    local bStroke = Stroke(b, Theme.Stroke, 1, 0.4)
+    local lbl = Text(b, t.label, 12, FNT.M, "Sub")
+    lbl.Size = UDim2.fromScale(1, 1)
+
+    local function paint()
+        local active = (Config["Sel_" .. t.id] == true)
+        b.BackgroundColor3 = active and Theme.Accent or Theme.Surface2
+        lbl.TextColor3 = active and Theme.OnAccent or Theme.Sub
+        bStroke.Color = active and Theme.Accent or Theme.Stroke
+    end
+    OnTheme(paint)
+    TargetButtons[t.id] = paint
+
+    b.MouseButton1Click:Connect(function()
+        Config["Sel_" .. t.id] = not Config["Sel_" .. t.id]
+        SaveConfig()
+        for _, p in pairs(TargetButtons) do p() end
+        PlayToggleSound(Config["Sel_" .. t.id])
+        Toast((Config["Sel_" .. t.id] and "✅ เลือกฟาม: " or "❌ เลิกฟาม: ") .. t.label, Config["Sel_" .. t.id])
+    end)
+end
+
+Section(KioskFarmPage, "Live Status (สถานะการฟาร์มแบบเรียลไทม์)")
+
+local StatusCard = Panel(KioskFarmPage, UDim2.new(1, 0, 0, 95))
+Tint(StatusCard)
+
+local StatusLine1 = Text(StatusCard, "• สถานะระบบ: รอเปิดใช้งาน", 12, FNT.B, "Text")
+StatusLine1.Position = UDim2.fromOffset(16, 12)
+StatusLine1.Size = UDim2.new(1, -32, 0, 20)
+
+local StatusLine2 = Text(StatusCard, "• สถานะในเกม: กำลังโหลด...", 12, FNT.M, "Sub")
+StatusLine2.Position = UDim2.fromOffset(16, 36)
+StatusLine2.Size = UDim2.new(1, -32, 0, 20)
+
+local StatusLine3 = Text(StatusCard, "• กระเป๋า: ชมพู่ 0/100 | หิน 0/300", 12, FNT.M, RGB(167, 139, 250))
+StatusLine3.Position = UDim2.fromOffset(16, 60)
+StatusLine3.Size = UDim2.new(1, -32, 0, 20)
+
+task.spawn(function()
+    while Screen.Parent do
+        pcall(function()
+            local active = Config.KioskFarmEnabled
+            local inGameActive = (LocalPlayer:GetAttribute("MinionActive") == true)
+            local minionStatus = LocalPlayer:GetAttribute("MinionStatus") or "ไม่ได้เริ่มฟาร์ม"
+
+            StatusLine1.Text = active and "• สถานะระบบ: 🟢 กำลังทำงาน (Master Kiosk ON)" or "• สถานะระบบ: ⏸️ หยุดทำงาน (Off)"
+            StatusLine1.TextColor3 = active and RGB(74, 222, 128) or Theme.Text
+
+            StatusLine2.Text = "• สถานะตู้ในเกม: " .. (inGameActive and ("🟢 " .. tostring(minionStatus)) or "⚪ พักฟาร์ม")
+
+            local pData = getPlayerData()
+            local raw = pData.__raw or pData
+            local cCount = raw.Chompoo or 0
+            local rCount = raw.Rock or 0
+            local cash = raw.Cash or raw.Money or 0
+            local curKey = PR.curKey or "-"
+            local tk = KIOSKS[curKey]
+            local tCount = tk and (raw[tk.item] or 0) or 0
+            StatusLine3.Text = string.format("• กระเป๋า: 🍏 %d/100 | 🪨 %d/300 | 🎯 %s %d/%d | 💵 $%s", cCount, rCount, tostring(curKey), tCount, tk and tk.maxCapacity or 0, tostring(cash):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", ""))
+        end)
+        task.wait(1)
+    end
+end)
+
+Section(KioskFarmPage, "Quick Actions (คำสั่งด่วน)")
+
+do
+    local row = Panel(KioskFarmPage, UDim2.new(1, 0, 0, 48), "TextButton")
+    HoverRow(row)
+    Register(row, "fly chompoo kiosk start")
+
+    local title = Text(row, "🍏 วาปไปตู้ชมพู่ & กดเริ่ม AutoFarm ทันที", 12, FNT.B, "Text", Enum.TextXAlignment.Center)
+    title.Size = UDim2.fromScale(1, 1)
+
+    row.MouseButton1Click:Connect(function()
+        PlayToggleSound(true)
+        Toast("กำลังวาปไปตู้ชมพู่...", true)
+        pressKiosk("Chompoo")
+    end)
+end
+
+do
+    local row = Panel(KioskFarmPage, UDim2.new(1, 0, 0, 48), "TextButton")
+    HoverRow(row)
+    Register(row, "fly rock kiosk start")
+
+    local title = Text(row, "🪨 วาปไปตู้หิน & กดเริ่ม AutoFarm ทันที", 12, FNT.B, "Text", Enum.TextXAlignment.Center)
+    title.Size = UDim2.fromScale(1, 1)
+
+    row.MouseButton1Click:Connect(function()
+        PlayToggleSound(true)
+        Toast("กำลังวาปไปตู้หิน...", true)
+        pressKiosk("Rock")
+    end)
+end
+
+do
+    local row = Panel(KioskFarmPage, UDim2.new(1, 0, 0, 48), "TextButton")
+    HoverRow(row)
+    Register(row, "cancel minion in game stop")
+
+    local title = Text(row, "⏹️ ยกเลิก AutoFarm ของตู้ในเกม (Stop In-Game)", 12, FNT.B, RGB(255, 120, 120), Enum.TextXAlignment.Center)
+    title.Size = UDim2.fromScale(1, 1)
+
+    row.MouseButton1Click:Connect(function()
+        PlayToggleSound(false)
+        StopInGameAutoFarm()
+    end)
+end
+
+
+--==================================================
+-- PAGE 2: AUTO SELL (ระบบขายของอัตโนมัติ)
+--==================================================
+local AutoSellPage = MakePage("AutoSell", "Auto Sell", "ระบบวาปไปขายของที่ร้านรับซื้ออัตโนมัติ (Economy Shop)")
+
+Section(AutoSellPage, "Auto Sell Settings (ตั้งค่าการขายอัตโนมัติ)")
+
+Toggle(AutoSellPage, {
+    key = "AutoSellEnabled",
+    title = "Auto Sell Enabled (เปิด/ปิด ขายของออโต้)",
+    desc = "ให้สคริปต์วาปไปขายที่ร้านเองเมื่อตู้เต็ม (ปิดไว้ได้เลยถ้ามีออโต้ขายอยู่แล้ว ตู้ที่เต็มจะข้ามไปตู้ถัดไปเอง)",
+    callback = function(v)
+        Toast(v and "เปิดใช้งานขายของออโต้แล้ว" or "ปิดใช้งานขายของออโต้แล้ว", v)
+    end,
+})
+
+do
+    local row = Panel(AutoSellPage, UDim2.new(1, 0, 0, 52), "TextButton")
+    HoverRow(row)
+    Register(row, "sell now instant economy shop")
+
+    local title = Text(row, "💰 วาปไปขายของทันที (Sell All Items Now)", 13, FNT.B, "Accent", Enum.TextXAlignment.Center)
+    title.Size = UDim2.fromScale(1, 1)
+
+    row.MouseButton1Click:Connect(function()
+        PlayToggleSound(true)
+        SellAllItemsNow(true)
+    end)
+end
+
+Section(AutoSellPage, "Shop Details (ข้อมูลร้านรับซื้อ)")
+
+local ShopCard = Panel(AutoSellPage, UDim2.new(1, 0, 0, 85))
+Tint(ShopCard)
+local ShopText = Text(ShopCard, "• ร้านรับซื้อ (EconomyShop): X=135.9, Y=61.0, Z=-1106.7\n• ตัวละครจะวาปไปหน้าร้านและกดขายของทุกชิ้นในคลังทันที\n• เมื่อขายเสร็จสิ้น จะวาปกลับไปยังตู้ฟาร์มและกดเริ่มฟาร์มต่ออัตโนมัติ", 12, FNT.M, "Sub")
+ShopText.Position = UDim2.fromOffset(18, 14)
+ShopText.Size = UDim2.new(1, -36, 1, -28)
+
+
+--==================================================
+-- PAGE 3: TELEPORT (วาร์ปด่วน)
+--==================================================
+local TeleportPage = MakePage("Teleport", "Teleport", "วาร์ปไปยังตู้ฟาร์มและจุดสำคัญต่าง ๆ ในแผนที่")
+
+Section(TeleportPage, "Kiosks & Key Locations (ตู้ฟาร์มและสถานที่สำคัญ)")
+
+local TP_SPOTS = {
+    { name = "🍏 ตู้เริ่มฟาร์มชมพู่ (Chompoo Kiosk)", cf = CFrame.new(-1519.9, 32.5, -3337.5) },
+    { name = "🪨 ตู้เริ่มฟาร์มหิน (Rock Kiosk)", cf = CFrame.new(-3314.4, 60.3, -3225.0) },
+    { name = "💰 ร้านรับซื้อของ (Economy Shop)", cf = CFrame.new(135.9, 62, -1106.7) },
+    { name = "⚙️ จุดแปรรูป (Processed Station)", cf = CFrame.new(1588.2, 31, -1316.9) },
+    { name = "🚰 จุดซ่อมท่อประปา (Fire Hydrant)", cf = CFrame.new(-2460, 89, 950) },
+    { name = "💡 จุดซ่อมเสาไฟ (Street Light)", cf = CFrame.new(138.3, 62, -1613.7) },
+    { name = "💎 จุดขุดคริสตัล (Crystal)", cf = CFrame.new(-2256.6, 91, 2428.0) },
+    -- Sanrio universities (gate statues, ground level)
+    { name = "🎀 Hello Kitty University", cf = CFrame.new(-5569, 72, -3122) },
+    { name = "🐶 Cinnamoroll University", cf = CFrame.new(-5569, 72, 4959) },
+    { name = "😈 Kuromi University", cf = CFrame.new(955, 72, 3931) },
+    { name = "🍓 My Melody University", cf = CFrame.new(-121, 72, -5446) },
+}
+
+-- Gas stations: found in the map at runtime (pumps closer than 150 studs belong to the same station)
+do
+    local stations = {}
+    local gs = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("GasStation")
+    if gs then
+        for _, d in ipairs(gs:GetDescendants()) do
+            if d:IsA("ProximityPrompt") and d.Parent and d.Parent:IsA("BasePart") then
+                local p = d.Parent.Position
+                local placed = false
+                for _, st in ipairs(stations) do
+                    if (st.sum / st.n - p).Magnitude < 150 then
+                        st.sum = st.sum + p
+                        st.n = st.n + 1
+                        placed = true
+                        break
+                    end
+                end
+                if not placed then
+                    stations[#stations + 1] = { sum = p, n = 1 }
+                end
+            end
+        end
+    end
+    for i, st in ipairs(stations) do
+        local c = st.sum / st.n
+        TP_SPOTS[#TP_SPOTS + 1] = {
+            name = string.format("⛽ ปั๊มน้ำมัน %d (Gas Station) X=%d Z=%d", i, math.floor(c.X + 0.5), math.floor(c.Z + 0.5)),
+            cf = CFrame.new(c.X, c.Y + 3, c.Z + 5),
+        }
+    end
+end
+
+for _, spot in ipairs(TP_SPOTS) do
+    local row = Panel(TeleportPage, UDim2.new(1, 0, 0, 48), "TextButton")
+    HoverRow(row)
+    Register(row, spot.name)
+
+    local title = Text(row, spot.name, 12, FNT.B, "Text")
+    title.Position = UDim2.fromOffset(16, 0)
+    title.Size = UDim2.new(1, -120, 1, 0)
+
+    local tpBtn = New("TextButton", {
+        Size = UDim2.fromOffset(80, 28),
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -12, 0.5, 0),
+        BorderSizePixel = 0,
+        Text = "วาป (TP)",
+        TextColor3 = Theme.OnAccent,
+        BackgroundColor3 = Theme.Accent,
+        Font = FNT.B,
+        TextSize = 12,
+        AutoButtonColor = true,
+    }, row)
+    Corner(tpBtn, 8)
+
+    tpBtn.MouseButton1Click:Connect(function()
+        PlayToggleSound(true)
+        Toast("กำลังวาปไปยัง " .. spot.name .. "...", true)
+        tweenTo(spot.cf, true)
+    end)
+end
+
+--==================================================
+-- PAGE: PROCESS (แปรรูปหิน)
+--==================================================
+do
+local ProcessPage = MakePage("Process", "Process", "แปรรูปหินเป็นแร่ที่จุดแปรรูป (Processed Station)")
+
+Section(ProcessPage, "Process Settings (ตั้งค่าการแปรรูป)")
+
+Toggle(ProcessPage, {
+    key = "AutoProcessEnabled",
+    title = "Auto Process (แปรรูปหินออโต้)",
+    desc = "เมื่อหินถึงขีดจำกัด จะวาปไปแปรรูปที่จุดแปรรูป แล้วไปตู้ถัดไปที่เลือกไว้",
+    callback = function(v)
+        Toast(v and "เปิดแปรรูปหินออโต้แล้ว" or "ปิดแปรรูปหินออโต้แล้ว", v)
+    end,
+})
+
+Section(ProcessPage, "Live Status (สถานะการแปรรูป)")
+
+local ProcCard = Panel(ProcessPage, UDim2.new(1, 0, 0, 95))
+Tint(ProcCard)
+
+local ProcLine1 = Text(ProcCard, "• สถานะ: ว่าง", 12, FNT.B, "Text")
+ProcLine1.Position = UDim2.fromOffset(16, 12)
+ProcLine1.Size = UDim2.new(1, -32, 0, 20)
+
+local ProcLine2 = Text(ProcCard, "• หิน: 0 ก้อน", 12, FNT.M, "Sub")
+ProcLine2.Position = UDim2.fromOffset(16, 36)
+ProcLine2.Size = UDim2.new(1, -32, 0, 20)
+
+local ProcLine3 = Text(ProcCard, "• แร่: -", 12, FNT.M, RGB(167, 139, 250))
+ProcLine3.Position = UDim2.fromOffset(16, 60)
+ProcLine3.Size = UDim2.new(1, -32, 0, 20)
+
+task.spawn(function()
+    while Screen.Parent do
+        pcall(function()
+            local pData = getPlayerData()
+            local raw = pData.__raw or pData
+            local rock = raw.Rock or 0
+            if PR.processing then
+                ProcLine1.Text = PR.state.running and "• สถานะ: 🟢 กำลังแปรรูป..." or "• สถานะ: 🟡 กำลังเริ่มแปรรูป..."
+                ProcLine1.TextColor3 = RGB(74, 222, 128)
+            else
+                ProcLine1.Text = "• สถานะ: ⏸️ ว่าง"
+                ProcLine1.TextColor3 = Theme.Text
+            end
+            ProcLine2.Text = string.format("• 🪨 หิน: %d ก้อน (ใช้ 2 ก้อน/รอบ, 3 วินาที/รอบ)", rock)
+            ProcLine3.Text = string.format(
+                "• แร่: Iron %d | Copper %d | Ruby %d | Gold %d | Diamond %d",
+                raw.Iron or 0, raw.Copper or 0, raw.Ruby or 0, raw.Gold or 0, raw.Diamond or 0
+            )
+        end)
+        task.wait(1)
+    end
+end)
+
+Section(ProcessPage, "Quick Actions (คำสั่งด่วน)")
+
+do
+    local row = Panel(ProcessPage, UDim2.new(1, 0, 0, 48), "TextButton")
+    HoverRow(row)
+    Register(row, "process rock now แปรรูป")
+
+    local title = Text(row, "⚙️ วาปไปแปรรูปหินทันที (Process Now)", 13, FNT.B, "Accent", Enum.TextXAlignment.Center)
+    title.Size = UDim2.fromScale(1, 1)
+
+    row.MouseButton1Click:Connect(function()
+        PlayToggleSound(true)
+        if PR.processing then
+            Toast("กำลังแปรรูปอยู่แล้ว", false)
+            return
+        end
+        task.spawn(function()
+            PR.run(true, true)
+        end)
+    end)
+end
+
+do
+    local row = Panel(ProcessPage, UDim2.new(1, 0, 0, 48), "TextButton")
+    HoverRow(row)
+    Register(row, "stop process หยุดแปรรูป")
+
+    local title = Text(row, "⏹️ หยุดแปรรูป (Stop Processing)", 12, FNT.B, RGB(255, 120, 120), Enum.TextXAlignment.Center)
+    title.Size = UDim2.fromScale(1, 1)
+
+    row.MouseButton1Click:Connect(function()
+        PlayToggleSound(false)
+        PR.cancel = true
+        if PR.event and PR.state.running then
+            PR.event:FireServer("Stop")
+        end
+        Toast("⏹️ หยุดแปรรูปแล้ว", false)
+    end)
+end
+
+Section(ProcessPage, "Station Details (ข้อมูลจุดแปรรูป)")
+
+local ProcInfo = Panel(ProcessPage, UDim2.new(1, 0, 0, 85))
+Tint(ProcInfo)
+local ProcInfoText = Text(ProcInfo, "• จุดแปรรูป (Processed Station): X=1588.2, Y=31, Z=-1316.9\n• หิน 2 ก้อน แปรรูปได้แร่ 1 ชิ้น (Iron 60%, Copper 25%, Ruby 10%, Gold 4%, Diamond 1%)\n• แปรรูปเสร็จแล้ว ถ้าเปิด Auto Sell ไว้ สคริปต์จะวาปไปขายแร่ที่ร้านรับซื้อต่อ", 12, FNT.M, "Sub")
+ProcInfoText.Position = UDim2.fromOffset(18, 14)
+ProcInfoText.Size = UDim2.new(1, -36, 1, -28)
+end
+
+--==================================================
+-- PAGE: PRICES (เช็คราคาร้านรับซื้อ)
+--==================================================
+do
+    local PricePage = MakePage("Prices", "Prices", "เช็คราคาร้านรับซื้อ (EconomyShop) ราคาเปลี่ยนทุก 30 นาที")
+
+    Section(PricePage, "Shop Overview (ภาพรวมร้านรับซื้อ)")
+
+    local card = Panel(PricePage, UDim2.new(1, 0, 0, 70))
+    Tint(card)
+    local l1 = Text(card, "• กำลังโหลดราคา...", 12, FNT.B, "Text")
+    l1.Position = UDim2.fromOffset(16, 12)
+    l1.Size = UDim2.new(1, -32, 0, 20)
+    local l2 = Text(card, "• มูลค่ากระเป๋า: -", 12, FNT.M, "Sub")
+    l2.Position = UDim2.fromOffset(16, 38)
+    l2.Size = UDim2.new(1, -32, 0, 20)
+
+    local cache = nil
+    local lastFetch = 0
+    local rows = {}
+    local listPanel
+
+    local function fetch()
+        lastFetch = os.clock()
+        pcall(function()
+            local st = EconomyState and EconomyState:InvokeServer()
+            if st and st.items then cache = st end
+        end)
+    end
+
+    local ICONS = {
+        Rock = "🪨", Wood = "🪵", Carrot = "🥕", Apple = "🍎", Chompoo = "🍏",
+        Avocado = "🥑", Copper = "🟤", Iron = "⚙️", Gold = "🥇", Ruby = "♦️", Diamond = "💎",
+    }
+
+    local function render()
+        if not cache then return end
+
+        local items = {}
+        for _, it in ipairs(cache.items) do items[#items + 1] = it end
+        table.sort(items, function(a, b) return (a.order or 0) < (b.order or 0) end)
+
+        if #rows ~= #items then
+            for _, r in ipairs(rows) do r:Destroy() end
+            rows = {}
+            for i = 1, #items do
+                local r = Text(listPanel, "", 12, FNT.M, "Text")
+                r.Position = UDim2.fromOffset(16, 10 + (i - 1) * 26)
+                r.Size = UDim2.new(1, -32, 0, 22)
+                rows[i] = r
+            end
+            listPanel.Size = UDim2.new(1, 0, 0, 20 + #items * 26)
+        end
+
+        local pData = getPlayerData()
+        local raw = pData.__raw or pData
+        local total = 0
+
+        for i, it in ipairs(items) do
+            local price = it.price or 0
+            local prev = it.prev or price
+            local diff = prev > 0 and ((price - prev) / prev * 100) or 0
+            local arrow = diff > 0.5 and "▲" or (diff < -0.5 and "▼" or "▬")
+            local tag = ""
+            if it.max and price >= it.max then
+                tag = "  ⭐ ราคาสูงสุด"
+            elseif it.min and price <= it.min then
+                tag = "  ⚠️ ราคาต่ำสุด"
+            end
+            local have = raw[it.name] or 0
+            local value = have * price
+            total = total + value
+
+            rows[i].Text = string.format(
+                "%s %s  $%s  %s %.0f%% (เดิม $%s)  |  ช่วง $%s-$%s  |  มี %s = $%s%s",
+                ICONS[it.name] or "📦", it.name, tostring(price), arrow, math.abs(diff), tostring(prev),
+                tostring(it.min or price), tostring(it.max or price), tostring(have), tostring(value), tag
+            )
+            rows[i].TextColor3 = diff > 0.5 and RGB(74, 222, 128) or (diff < -0.5 and RGB(248, 113, 113) or RGB(180, 180, 190))
+        end
+
+        local left = math.max(0, math.floor((cache.nextReset or 0) - Workspace:GetServerTimeNow()))
+        l1.Text = string.format("• ⏱️ ราคาจะเปลี่ยนใน %02d:%02d นาที (ทุก %d นาที)", math.floor(left / 60), left % 60, math.floor((cache.interval or 1800) / 60))
+        l2.Text = string.format("• 💰 มูลค่ากระเป๋าทั้งหมดตามราคาปัจจุบัน: $%s", tostring(total):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", ""))
+    end
+
+    do
+        local row = Panel(PricePage, UDim2.new(1, 0, 0, 44), "TextButton")
+        HoverRow(row)
+        Register(row, "refresh price รีเฟรชราคา")
+        local title = Text(row, "🔄 รีเฟรชราคาทันที", 13, FNT.B, "Accent", Enum.TextXAlignment.Center)
+        title.Size = UDim2.fromScale(1, 1)
+        row.MouseButton1Click:Connect(function()
+            PlayToggleSound(true)
+            task.spawn(function()
+                fetch()
+                render()
+                Toast("🔄 อัปเดตราคาแล้ว", true)
+            end)
+        end)
+    end
+
+    Section(PricePage, "Price List (รายการราคาทุกชนิด)")
+    listPanel = Panel(PricePage, UDim2.new(1, 0, 0, 40))
+    Tint(listPanel)
+
+    task.spawn(function()
+        while Screen.Parent do
+            local left = cache and ((cache.nextReset or 0) - Workspace:GetServerTimeNow()) or 0
+            if not cache or os.clock() - lastFetch > 30 or (left <= 0 and os.clock() - lastFetch > 5) then
+                fetch()
+            end
+            pcall(render)
+            task.wait(1)
+        end
+    end)
+end
+
+--==================================================
+-- PAGE: VISUAL (ESP + AVATAR)
+--==================================================
+do
+    local VisualPage = MakePage("Visual", "Visual", "ESP แสดงข้อมูลผู้เล่น และปรับแต่งตัวละคร (ฝั่งเราเท่านั้น)")
+
+    Section(VisualPage, "ข้อมูลผู้เล่น (Player ESP)")
+
+    Toggle(VisualPage, { key = "ESPEnabled", title = "เปิดการแสดง", desc = "แสดงข้อมูลผู้เล่นคนอื่นเหนือหัวและรอบตัว" })
+    Toggle(VisualPage, { key = "ESPName", title = "ชื่อผู้เล่น", desc = "ชื่อที่แสดง และ @ชื่อผู้ใช้" })
+    Toggle(VisualPage, { key = "ESPDistance", title = "ระยะห่าง", desc = "ระยะห่างจากเราเป็นเมตร" })
+    Toggle(VisualPage, { key = "ESPBox", title = "กรอบตัว", desc = "วาดกรอบรอบตัวผู้เล่น" })
+    Toggle(VisualPage, { key = "ESPHealth", title = "เลือด", desc = "แถบเลือดและ HP เป็นเปอร์เซ็นต์" })
+    Toggle(VisualPage, { key = "ESPArmor", title = "เกราะ", desc = "แถบเกราะและ AR เป็นเปอร์เซ็นต์ " })
+    Toggle(VisualPage, { key = "ESPShowID", title = "แสดงไอดี", desc = "แสดง Trade ID ของผู้เล่น" })
+
+    Slider(VisualPage, {
+        key = "ESPMaxDistance",
+        title = "ระยะสูงสุด",
+        desc = "แสดงเฉพาะผู้เล่นที่อยู่ในระยะนี้",
+        min = 100, max = 5000, step = 50, suffix = "m",
+    })
+    Slider(VisualPage, {
+        key = "ESPMaxPlayers",
+        title = "จำนวนผู้เล่น",
+        desc = "แสดงผู้เล่นที่ใกล้ที่สุดตามจำนวนนี้",
+        min = 1, max = 50, step = 1, suffix = "",
+    })
+
+    Section(VisualPage, "ตัวละคร (Avatar)")
+
+    Toggle(VisualPage, { key = "AvatarMod", title = "หัวหาย + ขาขวาแบบ Korblox", desc = "ซ่อนหัวและหน้า เปลี่ยนขาขวาเป็นแบบ Korblox (เห็นเฉพาะในเครื่องเรา) ปิดแล้วคืนค่าเดิม" })
+
+    ----------------------------------------------------------------
+    -- ESP engine (BillboardGui per player)
+    ----------------------------------------------------------------
+    local ESP_PARENT
+    pcall(function()
+        local cg = game:GetService("CoreGui")
+        local test = Instance.new("Folder")
+        test.Parent = cg
+        local ok = test.Parent == cg
+        test:Destroy()
+        if ok then ESP_PARENT = cg end
+    end)
+    ESP_PARENT = ESP_PARENT or LocalPlayer:WaitForChild("PlayerGui")
+
+    local guis = {}
+
+    local function make(className, props, parent)
+        local o = Instance.new(className)
+        for k, v in pairs(props) do o[k] = v end
+        o.Parent = parent
+        return o
+    end
+
+    local function label(parent, size, pos, anchor, color)
+        return make("TextLabel", {
+            BackgroundTransparency = 1,
+            Size = size, Position = pos, AnchorPoint = anchor,
+            Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = color,
+            TextStrokeTransparency = 0.3, TextStrokeColor3 = Color3.new(0, 0, 0),
+            Text = "",
+        }, parent)
+    end
+
+    local function build(plr)
+        local g = make("BillboardGui", {
+            Name = "LRIS_ESP", AlwaysOnTop = true, ResetOnSpawn = false, LightInfluence = 0,
+            ClipsDescendants = false, Size = UDim2.new(4, 0, 5.6, 0),
+            StudsOffset = Vector3.new(0, -0.15, 0), Enabled = false,
+        }, ESP_PARENT)
+
+        local box = make("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1) }, g)
+        local stroke = make("UIStroke", { Color = Color3.fromRGB(255, 255, 255), Thickness = 1.5 }, box)
+
+        local hpBg = make("Frame", { BackgroundColor3 = Color3.fromRGB(20, 20, 20), BackgroundTransparency = 0.3, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(0, -4, 0, 0), Size = UDim2.new(0, 4, 1, 0) }, g)
+        local hpFill = make("Frame", { BackgroundColor3 = Color3.fromRGB(60, 255, 80), BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 1) }, hpBg)
+
+        local arBg = make("Frame", { BackgroundColor3 = Color3.fromRGB(20, 20, 20), BackgroundTransparency = 0.3, BorderSizePixel = 0,
+            Position = UDim2.new(1, 4, 0, 0), Size = UDim2.new(0, 4, 1, 0) }, g)
+        local arFill = make("Frame", { BackgroundColor3 = Color3.fromRGB(80, 170, 255), BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0) }, arBg)
+
+        local idL = label(g, UDim2.new(0, 220, 0, 14), UDim2.new(0.5, 0, 0, -24), Vector2.new(0.5, 1), Color3.fromRGB(190, 160, 255))
+        local nameL = label(g, UDim2.new(0, 220, 0, 14), UDim2.new(0.5, 0, 0, -10), Vector2.new(0.5, 1), Color3.fromRGB(255, 255, 255))
+        local hpL = label(g, UDim2.new(0, 70, 0, 14), UDim2.new(0, -8, 0, -2), Vector2.new(1, 1), Color3.fromRGB(255, 255, 255))
+        hpL.TextSize = 10
+        hpL.TextXAlignment = Enum.TextXAlignment.Right
+        local arL = label(g, UDim2.new(0, 70, 0, 14), UDim2.new(1, 8, 0, -2), Vector2.new(0, 1), Color3.fromRGB(255, 255, 255))
+        arL.TextSize = 10
+        arL.TextXAlignment = Enum.TextXAlignment.Left
+        local distL = label(g, UDim2.new(0, 100, 0, 14), UDim2.new(0.5, 0, 1, 2), Vector2.new(0.5, 0), Color3.fromRGB(255, 255, 255))
+
+        guis[plr] = { g = g, box = box, hpBg = hpBg, hpFill = hpFill, arBg = arBg, arFill = arFill,
+            idL = idL, nameL = nameL, hpL = hpL, arL = arL, distL = distL }
+        return guis[plr]
+    end
+
+    local function remove(plr)
+        local e = guis[plr]
+        if e then e.g:Destroy() guis[plr] = nil end
+    end
+
+    Track(Players.PlayerRemoving:Connect(remove))
+
+    task.spawn(function()
+        while Screen.Parent do
+            local cam = Workspace.CurrentCamera
+            local myChar = LocalPlayer.Character
+            local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            local origin = (myHrp and myHrp.Position) or (cam and cam.CFrame.Position)
+
+            local visible = {}
+            if Config.ESPEnabled and origin then
+                local cand = {}
+                for _, plr in ipairs(Players:GetPlayers()) do
+                    if plr ~= LocalPlayer then
+                        local char = PR.getChar(plr)
+                        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                        local hum = char and char:FindFirstChildOfClass("Humanoid")
+                        if hrp and hum and hum.Health > 0 then
+                            local d = (hrp.Position - origin).Magnitude
+                            if d <= (Config.ESPMaxDistance or 1000) then
+                                cand[#cand + 1] = { plr = plr, hrp = hrp, hum = hum, char = char, d = d }
+                            end
+                        end
+                    end
+                end
+                table.sort(cand, function(a, b) return a.d < b.d end)
+                for i = 1, math.min(#cand, Config.ESPMaxPlayers or 15) do
+                    visible[cand[i].plr] = cand[i]
+                end
+            end
+
+            for plr, e in pairs(guis) do
+                if not visible[plr] then e.g.Enabled = false end
+            end
+
+            for plr, c in pairs(visible) do
+                local e = guis[plr] or build(plr)
+                e.g.Adornee = c.hrp
+                e.g.Enabled = true
+
+                e.box.Visible = Config.ESPBox
+                local frac = math.clamp(c.hum.Health / math.max(c.hum.MaxHealth, 1), 0, 1)
+                local armorVal = c.char:FindFirstChild("AmmorHeal")
+                local armor = math.clamp(((armorVal and tonumber(armorVal.Value)) or 0) / 100, 0, 1)
+
+                e.hpBg.Visible = Config.ESPHealth
+                e.hpL.Visible = Config.ESPHealth
+                e.hpFill.Size = UDim2.fromScale(1, frac)
+                e.hpL.Text = string.format("HP %d%%", math.floor(frac * 100 + 0.5))
+
+                e.arBg.Visible = Config.ESPArmor
+                e.arL.Visible = Config.ESPArmor
+                e.arFill.Size = UDim2.fromScale(1, armor)
+                e.arL.Text = string.format("AR %d%%", math.floor(armor * 100 + 0.5))
+
+                e.nameL.Visible = Config.ESPName
+                e.nameL.Text = plr.DisplayName .. " @" .. plr.Name
+
+                local pid = plr:FindFirstChild("PlayerID")
+                e.idL.Visible = Config.ESPShowID and pid ~= nil
+                e.idL.Text = pid and ("Trade ID: " .. tostring(pid.Value)) or ""
+                -- keep the ID line above the name (or at the name's spot when the name is hidden)
+                e.idL.Position = UDim2.new(0.5, 0, 0, Config.ESPName and -24 or -10)
+
+                e.distL.Visible = Config.ESPDistance
+                e.distL.Text = math.floor(c.d + 0.5) .. "m"
+            end
+
+            task.wait(0.1)
+        end
+        for plr in pairs(guis) do remove(plr) end
+    end)
+
+    ----------------------------------------------------------------
+    -- Avatar: headless + Korblox right leg (client side, restorable)
+    ----------------------------------------------------------------
+    local originals = nil
+    local appliedChar = nil
+
+    local function restore()
+        local o = originals
+        originals = nil
+        if not o or not o.char or not o.char.Parent then return end
+        pcall(function()
+            local head = o.char:FindFirstChild("Head")
+            if head then
+                head.Transparency = o.headTransparency or 0
+                if o.face and not head:FindFirstChild("face") then
+                    o.face.Parent = head
+                end
+            end
+            local up = o.char:FindFirstChild("RightUpperLeg")
+            if up and o.upMesh then
+                up.MeshId = o.upMesh
+                up.TextureID = o.upTex or ""
+            end
+            local low = o.char:FindFirstChild("RightLowerLeg")
+            if low then low.Transparency = o.lowTransparency or 0 end
+            local foot = o.char:FindFirstChild("RightFoot")
+            if foot then foot.Transparency = o.footTransparency or 0 end
+        end)
+    end
+
+    task.spawn(function()
+        while Screen.Parent do
+            local char = LocalPlayer.Character
+            if Config.AvatarMod and char then
+                pcall(function()
+                    local head = char:FindFirstChild("Head")
+                    local up = char:FindFirstChild("RightUpperLeg")
+                    local low = char:FindFirstChild("RightLowerLeg")
+                    local foot = char:FindFirstChild("RightFoot")
+                    if not originals or originals.char ~= char then
+                        originals = {
+                            char = char,
+                            headTransparency = head and head.Transparency,
+                            face = nil,
+                            upMesh = up and up.MeshId,
+                            upTex = up and up.TextureID,
+                            lowTransparency = low and low.Transparency,
+                            footTransparency = foot and foot.Transparency,
+                        }
+                    end
+                    if head then
+                        head.Transparency = 1
+                        local face = head:FindFirstChild("face")
+                        if face then
+                            if not originals.face then
+                                originals.face = face:Clone()
+                            end
+                            face:Destroy()
+                        end
+                    end
+                    if up then
+                        up.MeshId = "rbxassetid://9598310133"
+                        up.TextureID = "rbxassetid://902843398"
+                    end
+                    if low then low.Transparency = 1 end
+                    if foot then foot.Transparency = 1 end
+                end)
+            elseif originals then
+                restore()
+            end
+            task.wait()
+        end
+    end)
+end
+
+--==================================================
+-- PAGE: VEHICLE (เพิ่มความเร็วรถ)
+--==================================================
+do
+    local VehiclePage = MakePage("Vehicle", "Vehicle", "เพิ่มความเร็วรถ (ใช้ได้ตอนนั่งรถ)")
+
+    Section(VehiclePage, "Car Speed (ความเร็วรถ)")
+
+    Toggle(VehiclePage, {
+        key = "CarBoost",
+        title = "Car Speed Boost (เร่งความเร็วรถ)",
+        desc = "ตอนนั่งรถและเร่งไปข้างหน้า รถจะเร่งเร็วขึ้นเรื่อยๆ จนถึงความเร็วสูงสุดที่ตั้งไว้ (เบรกหรือถอยหลังจะไม่เร่ง)",
+    })
+
+    Slider(VehiclePage, {
+        key = "CarBoostPower",
+        title = "Boost Power (แรงเร่ง)",
+        desc = "ยิ่งสูงยิ่งเร่งเร็วขึ้นต่อวินาที",
+        min = 0.1, max = 3, step = 0.1, suffix = "x",
+    })
+
+    Slider(VehiclePage, {
+        key = "CarMaxSpeed",
+        title = "Max Speed (ความเร็วสูงสุด)",
+        desc = "ความเร็วสูงสุดที่ให้เร่งไปถึง (studs ต่อวินาที) ตั้งสูงมากรถอาจคุมไม่อยู่หรือพลิก",
+        min = 50, max = 1000, step = 10, suffix = " studs/s",
+    })
+
+    Toggle(VehiclePage, {
+        key = "CarNoLimit",
+        title = "Unlimited Speed (ปลดล็อกความเร็ว)",
+        desc = "ไม่จำกัดความเร็วสูงสุดของสคริปต์ รถจะเร่งต่อไปเรื่อยๆ ตราบที่ยังเร่งอยู่ (เสี่ยงรถพลิก ตกแมพ หรือหลุดจากเซิร์ฟเวอร์)",
+    })
+
+    Section(VehiclePage, "Live Status (สถานะ)")
+
+    local card = Panel(VehiclePage, UDim2.new(1, 0, 0, 60))
+    Tint(card)
+    local line = Text(card, "• ไม่ได้นั่งรถ", 12, FNT.B, "Text")
+    line.Position = UDim2.fromOffset(16, 10)
+    line.Size = UDim2.new(1, -32, 0, 20)
+    local line2 = Text(card, "• ", 12, FNT.M, "Sub")
+    line2.Position = UDim2.fromOffset(16, 32)
+    line2.Size = UDim2.new(1, -32, 0, 20)
+
+    local lastUi = 0
+    Track(RunService.Heartbeat:Connect(function(dt)
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local seat = hum and hum.SeatPart
+        if not seat then
+            if os.clock() - lastUi > 0.3 then
+                lastUi = os.clock()
+                line.Text = "• ไม่ได้นั่งรถ"
+                line2.Text = "• นั่งรถก่อนแล้วเปิดสวิตช์ด้านบน"
+            end
+            return
+        end
+
+        local root = seat.AssemblyRootPart or seat
+        local v = root.AssemblyLinearVelocity
+        local h = Vector3.new(v.X, 0, v.Z)
+        local sp = h.Magnitude
+
+        if os.clock() - lastUi > 0.3 then
+            lastUi = os.clock()
+            line.Text = string.format("• ความเร็วตอนนี้: %d studs/s", math.floor(sp + 0.5))
+            line2.Text = "• ที่นั่ง: " .. seat.ClassName .. " | เร่ง: " .. (Config.CarBoost and "เปิด" or "ปิด")
+        end
+
+        if not Config.CarBoost or sp < 5 then return end
+        if UIS:GetFocusedTextBox() then return end
+
+        local braking = UIS:IsKeyDown(Enum.KeyCode.S) or UIS:IsKeyDown(Enum.KeyCode.Down)
+        if braking then return end
+
+        local forward = UIS:IsKeyDown(Enum.KeyCode.W) or UIS:IsKeyDown(Enum.KeyCode.Up)
+        if not forward and seat:IsA("VehicleSeat") then
+            forward = seat.ThrottleFloat > 0 or seat.Throttle > 0
+        end
+        if not forward then
+            local md = hum.MoveDirection
+            forward = md.Magnitude > 0.1 and md:Dot(h.Unit) > 0.2
+        end
+        if not forward then return end
+
+        local maxSp = Config.CarNoLimit and 3000 or (Config.CarMaxSpeed or 150) -- 3000 = safety ceiling so the physics never explodes
+        if sp >= maxSp then return end
+        local newSp = math.min(sp * (1 + (Config.CarBoostPower or 0.8) * dt), maxSp)
+        root.AssemblyLinearVelocity = Vector3.new(h.X / sp * newSp, v.Y, h.Z / sp * newSp)
+    end))
+end
+
+local Settings = MakePage("Settings", "Settings", "Customize the LRIS SHOP look  •  Saved instantly")
+
+Section(Settings, "System")
+
+Toggle(Settings, {
+    key = "SoundEnabled",
+    title = "Toggle sounds",
+    desc = "Play a short sound when a switch is pressed",
+})
+
+Toggle(Settings, {
+    key = "StatsVisible",
+    title = "Show FPS / MS",
+    desc = "Small draggable stats box",
+    callback = function(v)
+        StatsGui.Enabled = v
+    end,
+})
+
+Toggle(Settings, {
+    key = "AntiAFK",
+    title = "Anti AFK",
+    desc = "Stops Roblox from kicking you for being idle",
+    callback = function(v)
+        HB.setAntiAFK(v)
+    end,
+})
+
+Slider(Settings, {
+    key = "UIScalePercent",
+    title = "Window size",
+    desc = "Adjust on top of the automatic screen scale",
+    min = 60,
+    max = 120,
+    step = 5,
+    suffix = "%",
+    callback = function()
+        ApplyScale(true)
+    end,
+})
+
+do
+    local row = Panel(Settings, UDim2.new(1, 0, 0, 62))
+    Register(row, "UI toggle key hotkey keybind open close")
+
+    local title = Text(row, "UI toggle key", 13, FNT.M, "Text")
+    title.Position = UDim2.fromOffset(16, 10)
+    title.Size = UDim2.new(1, -150, 0, 20)
+
+    local desc = Text(row, "Click, press a key. Esc cancels, Backspace clears", 12, FNT.R, "Sub")
+    desc.Position = UDim2.fromOffset(16, 33)
+    desc.Size = UDim2.new(1, -150, 0, 16)
+
+    local btn = New("TextButton", {
+        Size = UDim2.fromOffset(112, 30),
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -14, 0.5, 0),
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+    }, row)
+    Corner(btn, 8)
+    Bind(btn, "BackgroundColor3", "Surface2")
+    Bind(Stroke(btn, Theme.Accent, 1, 0.6), "Color", "Accent")
+
+    local lbl = Text(btn, "", 12, FNT.B, "Accent", Enum.TextXAlignment.Center)
+    lbl.Size = UDim2.fromScale(1, 1)
+
+    local capturing = false
+    local function show()
+        if capturing then
+            lbl.Text = "Press a key..."
+        elseif Config.UIToggleKey == "" then
+            lbl.Text = "None"
+        else
+            lbl.Text = Config.UIToggleKey
+        end
+    end
+    show()
+
+    btn.MouseButton1Click:Connect(function()
+        capturing = not capturing
+        show()
+    end)
+
+    Track(UIS.InputBegan:Connect(function(input, processed)
+        if input.UserInputType ~= Enum.UserInputType.Keyboard or input.KeyCode == Enum.KeyCode.Unknown then
+            return
+        end
+
+        if capturing then
+            capturing = false
+            if input.KeyCode == Enum.KeyCode.Backspace then
+                SetConfig("UIToggleKey", "")
+                Toast("UI toggle key cleared")
+            elseif input.KeyCode ~= Enum.KeyCode.Escape then
+                SetConfig("UIToggleKey", input.KeyCode.Name)
+                Toast("UI toggle key: " .. input.KeyCode.Name)
+            end
+            show()
+            return
+        end
+
+        if processed then
+            return
+        end
+        if Config.UIToggleKey ~= "" and input.KeyCode.Name == Config.UIToggleKey then
+            SetWindow(not Config.WindowVisible)
+        end
+    end))
+
+    Refreshers[#Refreshers + 1] = show
+end
+
+Section(Settings, "Theme presets")
+ThemeGrid(Settings)
+
+Section(Settings, "UI theme")
+ColorRow(Settings, "UI accent color", "UIAccentColor")
+ColorRow(Settings, "UI background color", "UIBackgroundColor")
+ColorRow(Settings, "UI button color", "UIButtonColor")
+
+Section(Settings, "Floating LS button")
+ColorRow(Settings, "LS button color", "FloatingButtonColor")
+ColorRow(Settings, "LS border color", "FloatingBorderColor")
+ColorRow(Settings, "LS glow color", "FloatingGlowColor")
+
+Section(Settings, "Config")
+
+local CfgCard = Panel(Settings, UDim2.new(1, 0, 0, 64))
+local CfgTitle = Text(CfgCard, "Auto save", 13, FNT.M, "Text")
+CfgTitle.Position = UDim2.fromOffset(16, 11)
+CfgTitle.Size = UDim2.new(1, -140, 0, 20)
+local CfgDesc = Text(
+    CfgCard,
+    writefile and CONFIG_FILE or "This executor cannot write files",
+    10,
+    FNT.R,
+    "Muted"
+)
+CfgDesc.Position = UDim2.fromOffset(16, 33)
+CfgDesc.Size = UDim2.new(1, -140, 0, 18)
+local CfgPill = StatusPill(CfgCard, 108)
+CfgPill.AnchorPoint = Vector2.new(1, 0.5)
+CfgPill.Position = UDim2.new(1, -14, 0.5, 0)
+
+local ResetRow = Panel(Settings, UDim2.new(1, 0, 0, 50), "TextButton")
+HoverRow(ResetRow)
+local ResetLabel = Text(ResetRow, "Reset all settings", 12, FNT.M, RGB(235, 90, 100))
+ResetLabel.Position = UDim2.fromOffset(16, 0)
+ResetLabel.Size = UDim2.new(1, -32, 1, 0)
+
+local FloatApplyPosition
+
+local resetArmed = false
+ResetRow.MouseButton1Click:Connect(function()
+    if not resetArmed then
+        resetArmed = true
+        ResetLabel.Text = "Press again to confirm reset"
+        task.delay(3, function()
+            resetArmed = false
+            ResetLabel.Text = "Reset all settings"
+        end)
+        return
+    end
+    resetArmed = false
+    ResetLabel.Text = "Reset all settings"
+
+    for k, v in pairs(Defaults) do
+        Config[k] = v
+    end
+    Collapsed = {}
+    for _, secs in pairs(SectionsByPage) do
+        for _, sec in ipairs(secs) do
+            sec.collapsed = false
+            sec.refresh(true)
+        end
+    end
+    ApplyTheme()
+    for _, fn in ipairs(Refreshers) do
+        pcall(fn)
+    end
+    Tween(Main, 0.3, { Position = UDim2.fromScale(Config.WindowX, Config.WindowY) }, Enum.EasingStyle.Quint)
+    ApplyScale(true)
+    if FloatApplyPosition then
+        FloatApplyPosition()
+    end
+    StatsBox.Position = UDim2.fromScale(Config.StatsX, Config.StatsY)
+    StatsGui.Enabled = Config.StatsVisible
+    SelectTab(Config.LastTab)
+    SaveConfig(true)
+    Toast("Settings reset")
+end)
+
+do
+    local UnloadRow = Panel(Settings, UDim2.new(1, 0, 0, 50), "TextButton")
+    HoverRow(UnloadRow)
+    local UnloadLabel = Text(UnloadRow, "Unload script (close everything)", 12, FNT.M, RGB(235, 90, 100))
+    UnloadLabel.Position = UDim2.fromOffset(16, 0)
+    UnloadLabel.Size = UDim2.new(1, -32, 1, 0)
+
+    local armed = false
+    UnloadRow.MouseButton1Click:Connect(function()
+        if not armed then
+            armed = true
+            UnloadLabel.Text = "Press again to unload the script"
+            task.delay(3, function()
+                armed = false
+                if UnloadLabel.Parent then
+                    UnloadLabel.Text = "Unload script (close everything)"
+                end
+            end)
+            return
+        end
+
+        -- save settings, then restore the game state
+        pcall(function()
+            SaveConfig(true)
+        end)
+        pcall(HB.unloadHitbox)
+        pcall(HB.unloadDress)
+        pcall(HB.unloadESP)
+
+        -- disconnect any open color picker listeners
+        pcall(function()
+            for _, c in ipairs(PaletteConns) do
+                c:Disconnect()
+            end
+        end)
+
+        -- destroy every GUI (this also disconnects all tracked connections)
+        pcall(function()
+            for _, name in ipairs({ "LRIS_Stats", "LRIS_Floating", "LRIS_UI" }) do
+                local g = PlayerGui:FindFirstChild(name)
+                if g then
+                    g:Destroy()
+                end
+            end
+        end)
+    end)
+end
+
+--==================================================
+-- SIDEBAR CATEGORIES
+--==================================================
+
+CatGroup("MAIN")
+Category("Home", "Home", "grid")
+Category("Kiosk Farm", "KioskFarm", "sliders")
+Category("Auto Sell", "AutoSell", "max")
+Category("Process", "Process", "sliders")
+Category("Prices", "Prices", "grid")
+Category("Visual", "Visual", "eye")
+Category("Vehicle", "Vehicle", "max")
+Category("Teleport", "Teleport", "eye")
+CatGroup("SYSTEM")
+Category("Settings", "Settings", "ring")
+-- FLOATING LS BUTTON
+--==================================================
+
+local ToggleGui = New("ScreenGui", {
+    Name = "LRIS_Floating",
+    ResetOnSpawn = false,
+    DisplayOrder = 999999,
+    IgnoreGuiInset = true,
+}, PlayerGui)
+
+local Float = New("Frame", {
+    Size = UDim2.fromOffset(48, 48),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(Config.FloatX, Config.FloatY),
+    BackgroundTransparency = 1,
+    Active = true,
+}, ToggleGui)
+
+local Glow = New("Frame", {
+    Size = UDim2.new(1, 8, 1, 8),
+    Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundTransparency = 1,
+}, Float)
+Corner(Glow, 15)
+local GlowStroke = Stroke(Glow, RGB(145, 145, 145), 3, 0.2)
+
+local RX = New("TextButton", {
+    Size = UDim2.fromScale(1, 1),
+    Text = "LS",
+    TextSize = 15,
+    Font = FNT.B,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Active = true,
+}, Float)
+Corner(RX, 13)
+local RXStroke = Stroke(RX, RGB(255, 255, 255), 2, 0.05)
+local RXGrad = New("UIGradient", {
+    Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.5, 0.85),
+        NumberSequenceKeypoint.new(1, 0),
+    }),
+}, RXStroke)
+TweenService:Create(
+    RXGrad,
+    TweenInfo.new(3, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1),
+    { Rotation = 360 }
+):Play()
+
+OnTheme(function()
+    local bg = Hex("FloatingButtonColor", RGB(18, 18, 18))
+    RX.BackgroundColor3 = bg
+    RX.TextColor3 = Lum(bg) > 0.55 and RGB(15, 15, 15) or RGB(255, 255, 255)
+    RXStroke.Color = Hex("FloatingBorderColor", RGB(255, 255, 255))
+    GlowStroke.Color = Hex("FloatingGlowColor", RGB(145, 145, 145))
+end)
+
+TweenService:Create(
+    GlowStroke,
+    TweenInfo.new(1.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+    { Transparency = 0.65 }
+):Play()
+
+do
+    local orbit = New("Frame", {
+        Size = UDim2.fromOffset(64, 64),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundTransparency = 1,
+    }, Float)
+    local dot = New("Frame", {
+        Size = UDim2.fromOffset(6, 6),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Color3.new(1, 1, 1),
+    }, orbit)
+    Corner(dot, 3)
+    TweenService:Create(
+        orbit,
+        TweenInfo.new(2.6, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1),
+        { Rotation = 360 }
+    ):Play()
+    task.spawn(function()
+        while Float.Parent do
+            task.wait(2.4)
+            pcall(function()
+                local pr = New("Frame", {
+                    Size = UDim2.fromOffset(48, 48),
+                    AnchorPoint = Vector2.new(0.5, 0.5),
+                    Position = UDim2.fromScale(0.5, 0.5),
+                    BackgroundTransparency = 1,
+                }, Float)
+                Corner(pr, 14)
+                local ps = Stroke(pr, Theme.Accent, 2, 0.2)
+                Tween(pr, 1.1, { Size = UDim2.fromOffset(120, 120) }, Enum.EasingStyle.Quad)
+                Tween(ps, 1.1, { Transparency = 1 }, Enum.EasingStyle.Quad)
+                task.delay(1.2, function()
+                    pr:Destroy()
+                end)
+            end)
+        end
+    end)
+    local fs = New("UIScale", { Scale = 1 }, Float)
+    TweenService:Create(
+        fs,
+        TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        { Scale = 1.07 }
+    ):Play()
+end
+
+FloatApplyPosition = function()
+    Float.Position = UDim2.fromScale(Config.FloatX, Config.FloatY)
+end
+
+MakeDraggable(RX, Float, "FloatX", "FloatY", function()
+    SetWindow(not Config.WindowVisible)
+end)
+
+--==================================================
+-- START
+--==================================================
+
+SelectTab(Config.LastTab)
+RefreshStats()
+RefreshHome()
+
+if Config.WindowVisible then
+    PlayOpen()
+end
+
+if not LoadedFromFile then
+    SaveConfig(true)
+end
+
+
+--==================================================
+-- STREAMER MODE (F8)
+-- Hides this script's own UI quickly before screen sharing/recording.
+-- This does NOT block screenshots or screen recording by external apps.
+--==================================================
+local StreamerMode = false
+local StreamerGuiStates = {}
+
+local function SetStreamerMode(enabled)
+    StreamerMode = enabled
+    for _, guiName in ipairs({ "LRIS_UI", "LRIS_Floating", "LRIS_Stats" }) do
+        local gui = PlayerGui:FindFirstChild(guiName)
+        if gui and gui:IsA("ScreenGui") then
+            if enabled then
+                if StreamerGuiStates[guiName] == nil then
+                    StreamerGuiStates[guiName] = gui.Enabled
+                end
+                gui.Enabled = false
+            else
+                local previous = StreamerGuiStates[guiName]
+                if previous ~= nil then
+                    gui.Enabled = previous
+                end
+            end
+        end
+    end
+    if not enabled then
+        table.clear(StreamerGuiStates)
+    end
+    print("[LRIS SHOP] Streamer Mode: " .. (enabled and "ON" or "OFF"))
+end
+
+Track(UIS.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.F8 then
+        SetStreamerMode(not StreamerMode)
+    end
+end))
+
+print("[LRIS SHOP] UI Loaded" .. (LoadedFromFile and " (Config loaded)" or " (new Config)"))
