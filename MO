@@ -71,6 +71,9 @@ local Defaults = {
     InstantPrompt = true,
     -- Auto Sell Config
     AutoSellEnabled = false, -- the game/another script already auto-sells
+    SellOnlyGoodPrice = true, -- only sell while the shop price is good
+    SellNotDropped = true,    -- ...and not lower than last round
+    MinPricePercent = 60,     -- ...and at least this % of the item's highest price
     -- Rock Processing Config
     AutoProcessEnabled = true,
     CarBoost = false,
@@ -1445,8 +1448,6 @@ local HB = {
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
-local TweenService = game:GetService("TweenService")
-local RunService = game:GetService("RunService")
 
 local FarmRemotes = ReplicatedStorage:WaitForChild("FarmRemotes", 10)
 local CancelAutoFarm = FarmRemotes and FarmRemotes:FindFirstChild("CancelAutoFarm")
@@ -1728,8 +1729,49 @@ end
 
 -- SELL ALL ITEMS AT SHOP
 local isSelling = false
-local function SellAllItemsNow(notify)
+local function fetchEconomy()
+    local st
+    pcall(function()
+        st = EconomyState and EconomyState:InvokeServer()
+    end)
+    return st
+end
+
+-- is the shop price of this item "good" right now?
+local function isPriceGood(item)
+    if not Config.SellOnlyGoodPrice then return true end
+    local price = item.price or 0
+    if Config.SellNotDropped and item.prev and price < item.prev then
+        return false -- price went down compared to the previous round
+    end
+    local mx = item.max
+    if mx and mx > 0 and price < mx * (Config.MinPricePercent or 60) / 100 then
+        return false -- too far below the highest price
+    end
+    return true
+end
+
+-- force = true sells everything regardless of the price (manual button)
+local function SellAllItemsNow(notify, force)
     if isSelling then return false end
+
+    -- decide BEFORE travelling: is there anything worth selling at today's prices?
+    local state = fetchEconomy()
+    local raw0 = (function() local d = getPlayerData() return d.__raw or d end)()
+    local anyGood = false
+    if state and state.items then
+        for _, item in ipairs(state.items) do
+            if (raw0[item.name] or 0) > 0 and (force or isPriceGood(item)) then
+                anyGood = true
+                break
+            end
+        end
+    end
+    if not anyGood then
+        if notify then Toast("⏳ ราคายังไม่ดี (หรือไม่มีของ) ยังไม่ขาย", false) end
+        return false
+    end
+
     isSelling = true
 
     local shopPos = Vector3.new(135.9, 61.0, -1106.7)
@@ -1741,13 +1783,14 @@ local function SellAllItemsNow(notify)
 
     local soldCount = 0
     pcall(function()
-        local state = EconomyState and EconomyState:InvokeServer()
-        if state and state.items then
+        -- fetch again at the shop: prices may have just changed
+        local st = fetchEconomy() or state
+        if st and st.items then
             local pData = getPlayerData()
             local raw = pData.__raw or pData
-            for _, item in ipairs(state.items) do
+            for _, item in ipairs(st.items) do
                 local have = raw[item.name] or 0
-                if have > 0 then
+                if have > 0 and (force or isPriceGood(item)) then
                     EconomySell:FireServer(item.name, have, item.price)
                     soldCount = soldCount + have
                     task.wait(0.15)
@@ -1762,7 +1805,7 @@ local function SellAllItemsNow(notify)
 
     task.wait(0.4)
     isSelling = false
-    return true
+    return soldCount > 0
 end
 
 -- ROCK PROCESSING (แปรรูปหิน)
@@ -2456,8 +2499,9 @@ task.spawn(function()
                         Toast("📦 หินเต็ม (" .. have .. "/" .. kData.maxCapacity .. ")! วาปไปแปรรูป...", true)
                         PR.run(false)
                     elseif targetKey ~= "Rock" and Config.AutoSellEnabled then
-                        Toast("📦 " .. kData.name .. " เต็ม! วาปไปขายของ...", true)
-                        SellAllItemsNow(false)
+                        if SellAllItemsNow(false) then
+                            Toast("💰 " .. kData.name .. " เต็ม ขายของตอนราคาดีแล้ว", true)
+                        end
                     end
 
                     if Config.KioskFarmEnabled then
@@ -4096,7 +4140,7 @@ local function Chip(text)
     return c
 end
 
-local ChipPlace = Chip("ID " .. tostring(game.PlaceId))
+Chip("ID " .. tostring(game.PlaceId))
 local ChipPlayers = Chip("Players -/-")
 
 task.spawn(function()
@@ -4486,6 +4530,25 @@ Toggle(AutoSellPage, {
     end,
 })
 
+Toggle(AutoSellPage, {
+    key = "SellOnlyGoodPrice",
+    title = "ขายเฉพาะตอนราคาดี (Sell Only At Good Price)",
+    desc = "ขายเฉพาะชนิดที่ราคาตอนนี้ผ่านเงื่อนไขด้านล่าง ถ้าราคาไม่ดีจะไม่ไปร้านและไปฟามตู้ถัดไปแทน (ปุ่มขายด้วยมือยังขายทุกอย่าง)",
+})
+
+Toggle(AutoSellPage, {
+    key = "SellNotDropped",
+    title = "ราคาต้องไม่ตกจากรอบก่อน",
+    desc = "ไม่ขายถ้าราคาตอนนี้ต่ำกว่าราคารอบก่อนหน้า (ราคาในร้านเปลี่ยนทุก 30 นาที)",
+})
+
+Slider(AutoSellPage, {
+    key = "MinPricePercent",
+    title = "ราคาขั้นต่ำเทียบราคาสูงสุด (%)",
+    desc = "ขายเมื่อราคาไม่ต่ำกว่าเปอร์เซ็นต์นี้ของราคาสูงสุดของชนิดนั้น (0 = ไม่เช็ก)",
+    min = 0, max = 100, step = 5, suffix = " %",
+})
+
 do
     local row = Panel(AutoSellPage, UDim2.new(1, 0, 0, 52), "TextButton")
     HoverRow(row)
@@ -4496,7 +4559,7 @@ do
 
     row.MouseButton1Click:Connect(function()
         PlayToggleSound(true)
-        SellAllItemsNow(true)
+        SellAllItemsNow(true, true)
     end)
 end
 
@@ -4772,6 +4835,8 @@ do
             local value = have * price
             total = total + value
 
+            local goodTag = isPriceGood(it) and "  ✅ ราคาดี" or "  ⏳ รอราคาขึ้น"
+            tag = tag .. goodTag
             rows[i].Text = string.format(
                 "%s %s  $%s  %s %.0f%% (เดิม $%s)  |  ช่วง $%s-$%s  |  มี %s = $%s%s",
                 ICONS[it.name] or "📦", it.name, tostring(price), arrow, math.abs(diff), tostring(prev),
