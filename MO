@@ -48,6 +48,7 @@ local Defaults = {
     -- Kiosk Auto Farm Config
     KioskFarmEnabled = false,
     FarmUnderground = true, -- true = travel underground by tween and farm underground, false = teleport and stay on the ground
+    JobUnderground = true,  -- Black Jobs (wire / cement): stand underground below the site while stealing
     UndergroundDepth = 15,
     TweenSpeed = 200,
     -- Kiosks to farm (multi-select, farmed in this order: Carrot, Chompoo, Wood, Avocado, Apple, Rock)
@@ -2121,8 +2122,11 @@ function PR.stealOnce(key)
     PR.siteBusy[site.prompt] = os.clock() + 20
     local before = getItemCount(job.item)
 
-    if Config.FarmUnderground then
+    if Config.JobUnderground then
         -- underground: stand just below the site (kept inside the prompt's activation range) and stay held there
+        if not hrp:GetAttribute("LRIS_Hidden") then
+            Toast("⬇️ ลงใต้ดินไปขโมย " .. job.label, true)
+        end
         local pp = PR.promptPos(site.prompt, site.pos)
         local reach = math.max((site.prompt.MaxActivationDistance or 10) - 2, 2)
         local depth = math.max(2, math.min(Config.UndergroundDepth or 15, 7, reach))
@@ -4332,7 +4336,13 @@ Toggle(KioskFarmPage, {
 Toggle(KioskFarmPage, {
     key = "FarmUnderground",
     title = "ฟามอยู่ใต้ดิน (Underground)",
-    desc = "เปิด = ตอนตู้ทำงาน ตอนเก็บ Loop (Hydrant/Lights/Crystal) และตอนขโมยสายไฟ/ปูน ตัวละครจะอยู่ใต้ดินใต้จุดนั้น | ปิด = ยืนบนดิน",
+    desc = "เปิด = ตอนตู้ทำงานหรือตอนเก็บ Loop (Hydrant/Lights/Crystal) ตัวละครจะอยู่ใต้ดินใต้จุดนั้น | ปิด = ยืนบนดิน",
+})
+
+Toggle(KioskFarmPage, {
+    key = "JobUnderground",
+    title = "ขโมยสายไฟ/ปูนใต้ดิน (Wire/Cement Underground)",
+    desc = "เปิด = ตอนขโมยสายไฟหรือปูน ตัวละครจะลงไปอยู่ใต้ดินใต้จุดขโมยจนได้ของ | ปิด = ยืนบนดินข้างจุดขโมย",
 })
 
 Toggle(KioskFarmPage, {
