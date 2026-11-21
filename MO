@@ -2091,6 +2091,14 @@ function PR.waitForLand(maxWait)
     return false
 end
 
+-- world position of a prompt (its parent is a part or an attachment)
+function PR.promptPos(prompt, fallback)
+    local p = prompt and prompt.Parent
+    if p and p:IsA("Attachment") then return p.WorldPosition end
+    if p and p:IsA("BasePart") then return p.Position end
+    return fallback
+end
+
 -- one theft: returns how many pieces were gained
 function PR.stealOnce(key)
     local job = PR.jobs[key]
@@ -2113,11 +2121,19 @@ function PR.stealOnce(key)
     PR.siteBusy[site.prompt] = os.clock() + 20
     local before = getItemCount(job.item)
 
-    tweenTo(CFrame.new(site.pos + Vector3.new(0, 3, 3)))
-    if not PR.waitForLand(1.5) then
-        local h = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-        if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
-        PR.waitForLand(1)
+    if Config.FarmUnderground then
+        -- underground: stand just below the site (kept inside the prompt's activation range) and stay held there
+        local pp = PR.promptPos(site.prompt, site.pos)
+        local reach = math.max((site.prompt.MaxActivationDistance or 10) - 2, 2)
+        local depth = math.max(2, math.min(Config.UndergroundDepth or 15, 7, reach))
+        tweenTo(CFrame.new(pp - Vector3.new(0, depth, 0)), false, true)
+    else
+        tweenTo(CFrame.new(site.pos + Vector3.new(0, 3, 3)))
+        if not PR.waitForLand(1.5) then
+            local h = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+            PR.waitForLand(1)
+        end
     end
     task.wait(0.2)
     pcall(function() site.prompt.RequiresLineOfSight = false end)
@@ -4316,7 +4332,7 @@ Toggle(KioskFarmPage, {
 Toggle(KioskFarmPage, {
     key = "FarmUnderground",
     title = "ฟามอยู่ใต้ดิน (Underground)",
-    desc = "เปิด = ตอนตู้ทำงานหรือตอนเก็บ Loop (Hydrant/Lights/Crystal) ตัวละครจะอยู่ใต้ดินใต้จุดนั้น | ปิด = ยืนบนดิน",
+    desc = "เปิด = ตอนตู้ทำงาน ตอนเก็บ Loop (Hydrant/Lights/Crystal) และตอนขโมยสายไฟ/ปูน ตัวละครจะอยู่ใต้ดินใต้จุดนั้น | ปิด = ยืนบนดิน",
 })
 
 Toggle(KioskFarmPage, {
